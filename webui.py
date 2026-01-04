@@ -6,17 +6,17 @@ from pathlib import Path
 
 
 # Function to run V2T
-def run_v2t(url, engine, model, language, task, output_format, keep_audio):
+def run_v2t(url, engine, model, language, task, output_format, keep_audio, device):
     if not url:
         return "Please enter a video URL.", [], ""
 
     # Construct CLI command for display
-    cmd = f'./v2t.py "{url}" --engine {engine}'
+    cmd = f'python v2t.py "{url}" --engine {engine}'
     if engine == "whisper":
         cmd += f" --model {model}"
     if language:
         cmd += f" --language {language}"
-    cmd += f" --task {task} --format {output_format}"
+    cmd += f" --task {task} --format {output_format} --device {device}"
     if keep_audio:
         cmd += " --keep-audio"
 
@@ -28,7 +28,7 @@ def run_v2t(url, engine, model, language, task, output_format, keep_audio):
         language=language if language else None,
         task=task,
         output="./output",
-        device="cpu",  # Force CPU for now or add option
+        device=device,
         keep_audio=keep_audio,
         format=output_format,
         cookies=None,
@@ -101,6 +101,13 @@ with gr.Blocks(title="Video2Text WebUI") as demo:
                     choices=["txt", "srt", "all"], value="txt", label="Output Format"
                 )
 
+                device_input = gr.Dropdown(
+                    choices=["cpu", "cuda"],
+                    value="cpu",
+                    label="Device",
+                    info="Use 'cuda' for NVIDIA GPU (requires configured environment), 'cpu' for others.",
+                )
+
                 keep_audio_input = gr.Checkbox(label="Keep Audio File", value=False)
 
             submit_btn = gr.Button("Start Processing", variant="primary")
@@ -120,6 +127,7 @@ with gr.Blocks(title="Video2Text WebUI") as demo:
             task_input,
             format_input,
             keep_audio_input,
+            device_input,
         ],
         outputs=[output_log, output_files, command_output],
     )

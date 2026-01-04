@@ -10,7 +10,6 @@
     *   **Whisper** (默认)：通用性强，OpenAI 出品。
     *   **FunASR (SenseVoice)**：针对中文优化，识别准确率极高，速度快。
 *   **WebUI 界面**：提供可视化的 Web 界面，操作更便捷。
-*   **高性能**：针对 macOS Apple Silicon (M1/M2/M3) 优化，CPU 运行速度极快。
 *   **多格式支持**：支持导出 `.txt` 纯文本和 `.srt` 字幕文件。
 *   **Cookie 支持**：支持加载 cookies.txt 以下载会员/年龄限制视频。
 
@@ -18,13 +17,17 @@
 
 ### 1. 前置要求
 
-*   macOS (推荐 Apple Silicon 机型)
+*   Windows 10/11
 *   Python 3.9+
 *   FFmpeg (必须安装)
 
-```bash
-brew install ffmpeg
+推荐使用 `winget` 安装 FFmpeg:
+
+```powershell
+winget install ffmpeg
 ```
+
+或者从 [FFmpeg 官网](https://ffmpeg.org/download.html) 下载并添加到系统环境变量 PATH 中。
 
 ### 2. 获取代码与安装依赖
 
@@ -35,12 +38,32 @@ cd V2T
 
 # 安装 Python 依赖
 pip install -r requirements.txt
-
-# 赋予执行权限
-chmod +x v2t.py
 ```
 
 ## 🚀 使用指南
+
+### ⚡️ 性能优化指南
+
+为了获得最佳的转写速度，建议根据您的硬件选择合适的配置：
+
+#### 1. Windows 用户 (NVIDIA GPU)
+*   **推荐配置**：`--device cuda`
+*   **前提条件**：
+    *   安装 NVIDIA 显卡驱动。
+    *   安装 CUDA Toolkit (推荐 11.8 或 12.x)。
+    *   安装支持 CUDA 的 PyTorch 版本（仅 FunASR 需要）。
+    *   对于 `faster-whisper`，需要确保安装了 cuDNN 库（通常包含在 CUDA Toolkit 中或单独安装）。
+*   **如何启用**：
+    *   **命令行**：添加参数 `--device cuda`
+    *   **WebUI**：在 "Device" 选项中选择 "cuda"。
+
+#### 3. 模型选择建议 (Whisper)
+*   **tiny / base**: 极快，适合对精度要求不高的场景。
+*   **small**: 速度与精度的平衡点，**推荐日常使用**。
+*   **medium**: 精度更高，但在 CPU 上速度较慢。
+*   **large-v3**: 最高精度，建议仅在有高性能 GPU 或对时间不敏感时使用。
+
+---
 
 ### 🖥️ WebUI 界面 (推荐)
 
@@ -59,7 +82,7 @@ python webui.py
 直接转换单个视频：
 
 ```bash
-./v2t.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+python v2t.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
 ### 批量处理
@@ -74,14 +97,14 @@ https://www.bilibili.com/video/BVxxx
 然后运行：
 
 ```bash
-./v2t.py urls.txt
+python v2t.py urls.txt
 ```
 
 ### 常用参数
 
 | 参数 | 说明 | 示例 |
 | :--- | :--- | :--- |
-| `urls` | 视频链接或链接文件路径 | `v2t.py url1 url2` |
+| `urls` | 视频链接或链接文件路径 | `python v2t.py url1 url2` |
 | `--engine` | ASR 引擎: `whisper` (默认) 或 `funasr` (SenseVoice) | `--engine funasr` |
 | `--model` | Whisper 模型大小 (tiny/base/small/medium/large-v3) | `--model large-v3` (默认 small) |
 | `--language` | 强制指定源语言代码 | `--language zh` (默认自动检测) |
@@ -96,7 +119,7 @@ https://www.bilibili.com/video/BVxxx
 **使用 Large-v3 模型并导出 SRT 字幕：**
 
 ```bash
-./v2t.py "https://youtu.be/xxx" --model large-v3 --format srt
+python v2t.py "https://youtu.be/xxx" --model large-v3 --format srt
 ```
 
 **使用 Cookie 下载会员视频：**
@@ -104,14 +127,13 @@ https://www.bilibili.com/video/BVxxx
 将导出的 `cookies.txt` 放在同级目录，或手动指定：
 
 ```bash
-./v2t.py "https://www.bilibili.com/video/BVxxx" --cookies ./my_cookies.txt
+python v2t.py "https://www.bilibili.com/video/BVxxx" --cookies ./my_cookies.txt
 ```
 
 ## 📝 注意事项
 
 *   **模型下载**：首次运行某个模型（如 `small`）时，程序会自动从 Hugging Face 下载模型权重，请保持网络通畅。
 *   **文件名**：输出文件名格式为 `标题_视频ID`，会自动去除非法字符。
-*   **性能**：在 M1/M2/M3 芯片上，推荐使用默认的 `--device cpu`，配合 `faster-whisper` 的 int8 量化，速度非常快且省电。
 
 ## 📄 许可证
 

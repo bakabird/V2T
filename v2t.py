@@ -262,7 +262,9 @@ class V2T:
         """Check if FFmpeg is installed."""
         if not shutil.which("ffmpeg"):
             print("Error: FFmpeg is not installed.")
-            print("Please install it using: brew install ffmpeg")
+            if sys.platform == "win32":
+                print("Please install it using: winget install ffmpeg")
+            print("Please download from https://ffmpeg.org/download.html and add to PATH")
             sys.exit(1)
 
     def sanitize_filename(self, name: str) -> str:
