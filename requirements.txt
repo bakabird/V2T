@@ -1,0 +1,10 @@
+yt-dlp>=2023.0.0
+faster-whisper>=0.10.0
+tqdm>=4.65.0
+funasr>=1.0.0
+modelscope>=1.10.0
+torch
+torchaudio
+datasets==2.16.0
+transformers
+gradio
