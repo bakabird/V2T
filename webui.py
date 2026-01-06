@@ -5,12 +5,12 @@ from v2t import V2T
 from pathlib import Path
 
 
-# Function to run V2T
-def run_v2t(url, engine, model, language, task, output_format, keep_audio, device):
+def generate_command(
+    url, engine, model, language, task, output_format, keep_audio, device
+):
     if not url:
-        return "Please enter a video URL.", [], ""
+        return ""
 
-    # Construct CLI command for display
     cmd = f'python v2t.py "{url}" --engine {engine}'
     if engine == "whisper":
         cmd += f" --model {model}"
@@ -19,6 +19,13 @@ def run_v2t(url, engine, model, language, task, output_format, keep_audio, devic
     cmd += f" --task {task} --format {output_format} --device {device}"
     if keep_audio:
         cmd += " --keep-audio"
+    return cmd
+
+
+# Function to run V2T
+def run_v2t(url, engine, model, language, task, output_format, keep_audio, device):
+    if not url:
+        return "Please enter a video URL.", []
 
     # Create args
     args = SimpleNamespace(
@@ -41,7 +48,7 @@ def run_v2t(url, engine, model, language, task, output_format, keep_audio, devic
         # Find generated files
         output_dir = Path("./output")
         if not output_dir.exists():
-            return "Output directory not found.", [], cmd
+            return "Output directory not found.", []
 
         # Sort by modification time
         files = sorted(output_dir.iterdir(), key=os.path.getmtime, reverse=True)
@@ -52,11 +59,10 @@ def run_v2t(url, engine, model, language, task, output_format, keep_audio, devic
         return (
             f"Successfully processed: {url}\nCheck the files below.",
             recent_files,
-            cmd,
         )
 
     except Exception as e:
-        return f"Error: {str(e)}", [], cmd
+        return f"Error: {str(e)}", []
 
 
 # Define Gradio Interface
@@ -110,26 +116,42 @@ with gr.Blocks(title="Video2Text WebUI") as demo:
 
                 keep_audio_input = gr.Checkbox(label="Keep Audio File", value=False)
 
+            command_output = gr.Textbox(
+                label="CLI Command",
+                interactive=False,
+                lines=4,
+            )
+
             submit_btn = gr.Button("Start Processing", variant="primary")
 
         with gr.Column():
-            command_output = gr.Textbox(label="CLI Command", interactive=False)
             output_log = gr.Textbox(label="Status Log")
             output_files = gr.File(label="Generated Files")
 
+    # Inputs list for binding
+    inputs = [
+        url_input,
+        engine_input,
+        model_input,
+        language_input,
+        task_input,
+        format_input,
+        keep_audio_input,
+        device_input,
+    ]
+
+    # Bind events for live CLI command update
+    for input_component in inputs:
+        input_component.change(
+            fn=generate_command,
+            inputs=inputs,
+            outputs=command_output,
+        )
+
     submit_btn.click(
         fn=run_v2t,
-        inputs=[
-            url_input,
-            engine_input,
-            model_input,
-            language_input,
-            task_input,
-            format_input,
-            keep_audio_input,
-            device_input,
-        ],
-        outputs=[output_log, output_files, command_output],
+        inputs=inputs,
+        outputs=[output_log, output_files],
     )
 
 if __name__ == "__main__":
