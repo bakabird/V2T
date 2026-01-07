@@ -55,15 +55,6 @@ class VideoInfoGetter:
         self.crawler = None
         self.cookies = self._load_cookies()
 
-    async def __aenter__(self):
-        """异步上下文管理器入口"""
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """异步上下文管理器出口，确保资源正确清理"""
-        await self._close_crawler()
-        return False
-
     def _load_cookies(self) -> list:
         """
         从 cookies.txt 文件加载 cookies（Netscape/Mozilla 格式）
