@@ -302,6 +302,7 @@ class V2T:
                 else ("cookies.txt" if os.path.exists("cookies.txt") else None)
             ),
             "restrictfilenames": True,
+            "noplaylist": True,  # 防止 Bilibili 播放列表导致元信息丢失
         }
 
         try:
