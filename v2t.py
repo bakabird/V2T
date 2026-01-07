@@ -112,28 +112,28 @@ class FunASREngine(TranscriberEngine):
         """
         # Remove header tags like <|zh|>, <|NEUTRAL|>, etc.
         # But keep time tags.
-        
+
         # 1. Clean up header tags (language, emotion, event) but keep time tags
         # Typical header: <|0.00|> <|zh|> <|NEUTRAL|> <|0.00|>
         # We want to remove <|zh|>, <|NEUTRAL|>, <|speech|>, etc.
         # But be careful not to remove <|1.23|>
-        
+
         # Remove non-digit tags
-        clean_text = re.sub(r'<\|[a-zA-Z]+\|>', '', text)
-        clean_text = re.sub(r'<\|[A-Z]+\|>', '', clean_text) # NEUTRAL etc
-        
+        clean_text = re.sub(r"<\|[a-zA-Z]+\|>", "", text)
+        clean_text = re.sub(r"<\|[A-Z]+\|>", "", clean_text)  # NEUTRAL etc
+
         # 2. Split by timestamp tags
-        parts = re.split(r'(<\|\d+\.\d+\|>)', clean_text)
-        
-        raw_tokens = [] # List of (time, text)
+        parts = re.split(r"(<\|\d+\.\d+\|>)", clean_text)
+
+        raw_tokens = []  # List of (time, text)
         current_time = 0.0
-        
+
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-                
-            if re.match(r'<\|\d+\.\d+\|>', part):
+
+            if re.match(r"<\|\d+\.\d+\|>", part):
                 try:
                     t_val = float(part[2:-2])
                     current_time = t_val
@@ -145,62 +145,62 @@ class FunASREngine(TranscriberEngine):
                 # So 'current_time' is the start time of this text.
                 if part:
                     raw_tokens.append((current_time, part))
-        
+
         # 3. Merge tokens into segments
         segments = []
         if not raw_tokens:
             return segments
-            
+
         current_seg_text = []
         current_seg_start = raw_tokens[0][0]
-        
+
         for i, (t, txt) in enumerate(raw_tokens):
             current_seg_text.append(txt)
-            
+
             # Decide whether to split into a new segment
             # Condition 1: Punctuation end
-            is_end_of_sentence = re.search(r'[.!?。！？]$', txt)
-            
-            # Condition 2: Long duration pause? 
-            # If next token starts much later than current token time? 
+            is_end_of_sentence = re.search(r"[.!?。！？]$", txt)
+
+            # Condition 2: Long duration pause?
+            # If next token starts much later than current token time?
             # Hard to guess duration of current token without next token time.
             # But we can look at the gap if we want.
-            
+
             # Condition 3: Length limit
             is_long_enough = len("".join(current_seg_text)) > 80
-            
+
             should_split = is_end_of_sentence or is_long_enough
-            
+
             if should_split:
                 # Determine end time
                 if i + 1 < len(raw_tokens):
-                    end_time = raw_tokens[i+1][0]
+                    end_time = raw_tokens[i + 1][0]
                 else:
                     # Last token, add heuristic duration
                     end_time = t + max(1.0, len(txt) * 0.2)
-                
+
                 # Create segment
                 full_text = "".join(current_seg_text)
-                segments.append(Segment(
-                    start=current_seg_start,
-                    end=end_time,
-                    text=full_text
-                ))
-                
+                segments.append(
+                    Segment(start=current_seg_start, end=end_time, text=full_text)
+                )
+
                 # Reset for next segment
                 if i + 1 < len(raw_tokens):
-                    current_seg_start = raw_tokens[i+1][0]
+                    current_seg_start = raw_tokens[i + 1][0]
                 current_seg_text = []
 
         # Flush remaining
         if current_seg_text:
-             # Last segment
-             segments.append(Segment(
-                start=current_seg_start,
-                end=raw_tokens[-1][0] + 1.0,
-                text="".join(current_seg_text)
-            ))
-            
+            # Last segment
+            segments.append(
+                Segment(
+                    start=current_seg_start,
+                    end=raw_tokens[-1][0] + 1.0,
+                    text="".join(current_seg_text),
+                )
+            )
+
         return segments
 
     def transcribe(
@@ -264,7 +264,9 @@ class V2T:
             print("Error: FFmpeg is not installed.")
             if sys.platform == "win32":
                 print("Please install it using: winget install ffmpeg")
-            print("Please download from https://ffmpeg.org/download.html and add to PATH")
+            print(
+                "Please download from https://ffmpeg.org/download.html and add to PATH"
+            )
             sys.exit(1)
 
     def sanitize_filename(self, name: str) -> str:
@@ -273,8 +275,12 @@ class V2T:
         clean_name = "".join(ch for ch in clean_name if ord(ch) >= 32)
         return clean_name.strip()
 
-    def download_audio(self, url: str) -> Tuple[Optional[Path], str, str]:
-        """Download audio from video URL using yt-dlp."""
+    def download_audio(self, url: str) -> Tuple[Optional[Path], str, str, str, str]:
+        """Download audio from video URL using yt-dlp.
+
+        Returns:
+            Tuple of (audio_path, title, video_id, upload_date, uploader)
+        """
         print(f"\n[Downloader] Processing: {url}")
         out_tmpl = str(self.temp_dir / "%(title)s_%(id)s.%(ext)s")
 
@@ -311,11 +317,22 @@ class V2T:
                     else:
                         raise FileNotFoundError("Downloaded audio file not found.")
 
+                # Extract video metadata
+                title = info.get("title", "Untitled")
+                video_id = info.get("id", "")
+                upload_date = info.get("upload_date", "")  # Format: YYYYMMDD
+                uploader = info.get("uploader", "") or info.get(
+                    "channel", ""
+                )  # Fallback to channel
+
                 print(f"[Downloader] Downloaded: {base_path.name}")
-                return base_path, info.get("title", "Untitled"), info.get("id", "")
+                print(
+                    f"[Downloader] Video info - Date: {upload_date}, Author: {uploader}"
+                )
+                return base_path, title, video_id, upload_date, uploader
         except Exception as e:
             logger.error(f"Download failed for {url}: {str(e)}")
-            return None, "", ""
+            return None, "", "", "", ""
 
     def format_time(self, seconds: float) -> str:
         hours = int(seconds // 3600)
@@ -355,18 +372,41 @@ class V2T:
         print(f"Found {len(urls)} task(s).")
 
         for url in urls:
-            audio_path, title, video_id = self.download_audio(url)
+            audio_path, title, video_id, upload_date, uploader = self.download_audio(
+                url
+            )
             if audio_path:
                 segments = self.transcriber.transcribe(
                     audio_path, language=self.args.language, task=self.args.task
                 )
 
                 if segments:
-                    safe_title = self.sanitize_filename(title)
-                    if video_id and video_id not in safe_title:
-                        safe_title = f"{safe_title}_{video_id}"
+                    # Build filename: {date}_{author}_{title}_{video_id}
+                    # Format date from YYYYMMDD to YYYY-MM-DD for readability
+                    date_part = ""
+                    if upload_date and len(upload_date) == 8:
+                        date_part = (
+                            f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+                        )
 
-                    output_base = self.output_dir / safe_title
+                    # Sanitize all parts
+                    safe_title = self.sanitize_filename(title)
+                    safe_uploader = self.sanitize_filename(uploader) if uploader else ""
+
+                    # Build filename parts list (only include non-empty parts)
+                    name_parts = []
+                    if date_part:
+                        name_parts.append(date_part)
+                    if safe_uploader:
+                        name_parts.append(safe_uploader)
+                    if safe_title:
+                        name_parts.append(safe_title)
+                    if video_id:
+                        name_parts.append(video_id)
+
+                    # Join with underscore
+                    output_filename = "_".join(name_parts) if name_parts else "output"
+                    output_base = self.output_dir / output_filename
 
                     if self.args.format in ["txt", "all"]:
                         txt_path = output_base.with_suffix(".txt")
