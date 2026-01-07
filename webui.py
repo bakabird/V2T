@@ -80,6 +80,7 @@ def generate_vlg_command(
     cmd = f'python vlg.py "{channel_url}"'
 
     if date_mode == "最近N天" and days:
+        cmd += f" --days {days}"
     elif date_mode == "指定日期范围":
         if start_date:
             cmd += f" --start {start_date}"
@@ -94,6 +95,7 @@ def generate_vlg_command(
 
 def run_vlg(channel_url, date_mode, days, start_date, end_date, max_videos):
     """运行视频列表获取"""
+    if not channel_url:
         return "请输入频道/作者 URL", None, []
 
     try:
