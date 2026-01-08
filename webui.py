@@ -17,6 +17,7 @@ def generate_command(
     output_format,
     keep_audio,
     device,
+    hotwords,
 ):
     """生成批量处理的 CLI 命令"""
     urls = []
@@ -45,6 +46,13 @@ def generate_command(
     cmd += f" --task {task} --format {output_format} --device {device}"
     if keep_audio:
         cmd += " --keep-audio"
+    if hotwords:
+        # 将多行热词合并为逗号分隔的字符串
+        hw_list = [
+            w.strip() for w in hotwords.replace("\n", ",").split(",") if w.strip()
+        ]
+        if hw_list:
+            cmd += f' --hotwords "{",".join(hw_list)}"'
     return cmd
 
 
@@ -80,6 +88,19 @@ def parse_urls(urls_text, url_file):
     return unique_urls
 
 
+def parse_hotwords(hotwords_text):
+    """解析热词输入，支持逗号分隔和换行分隔"""
+    if not hotwords_text:
+        return None
+    # 将换行替换为逗号，然后按逗号分隔
+    hw_list = [
+        w.strip() for w in hotwords_text.replace("\n", ",").split(",") if w.strip()
+    ]
+    if hw_list:
+        return ",".join(hw_list)
+    return None
+
+
 # Function to run V2T in batch mode with progress updates
 def run_v2t_batch(
     urls_text,
@@ -91,6 +112,7 @@ def run_v2t_batch(
     output_format,
     keep_audio,
     device,
+    hotwords,
 ):
     """批量处理视频转文字，使用 generator 实时更新进度"""
 
@@ -104,7 +126,12 @@ def run_v2t_batch(
     results = []  # [(url, status, message)]
     all_files = []
 
-    yield f"🚀 开始批量处理 {total} 个视频...\n", [], []
+    # 解析热词
+    parsed_hotwords = parse_hotwords(hotwords)
+    if parsed_hotwords:
+        yield f"🚀 开始批量处理 {total} 个视频...\n📝 热词: {parsed_hotwords}\n", [], []
+    else:
+        yield f"🚀 开始批量处理 {total} 个视频...\n", [], []
 
     for idx, url in enumerate(urls, 1):
         # 更新进度
@@ -134,6 +161,7 @@ def run_v2t_batch(
                 keep_audio=keep_audio,
                 format=output_format,
                 cookies=None,
+                hotwords=parsed_hotwords,
             )
 
             app = V2T(args)
@@ -350,6 +378,13 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                             label="保留下载的音频文件", value=False
                         )
 
+                        hotwords_input = gr.Textbox(
+                            label="热词 (Hotwords)",
+                            placeholder="输入热词提高识别准确率\n每行一个或用逗号分隔\n例如: GPT, LLM, Transformer\n或中文: 人工智能, 机器学习",
+                            lines=3,
+                            info="用于提升特定词汇的识别率，支持中英文",
+                        )
+
                     command_output = gr.Textbox(
                         label="CLI 命令预览",
                         interactive=False,
@@ -399,6 +434,7 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                 format_input,
                 keep_audio_input,
                 device_input,
+                hotwords_input,
             ]
 
             # Bind events for live CLI command update
@@ -412,6 +448,7 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                 format_input,
                 keep_audio_input,
                 device_input,
+                hotwords_input,
             ]:
                 input_component.change(
                     fn=generate_command,

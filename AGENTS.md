@@ -103,3 +103,29 @@ v2t.py: V2T.download_audio() → Transcriber.transcribe()
 **修改函数**:
 - `generate_command()`: 支持批量 URL 命令生成
 - `run_vlg()`: 返回值增加 urls_text 用于 Tab 间传递
+
+### 2025-01-08: 热词 (Hotwords) 支持
+
+**变更文件**: `v2t.py`, `webui.py`
+
+**新增功能**:
+- 支持热词设置，提高特定词汇的语音识别准确率
+- 同时支持 Whisper (faster-whisper) 和 FunASR (SenseVoice) 两种引擎
+- 热词可通过 CLI 参数 `--hotwords` 或 WebUI 输入框配置
+
+**v2t.py 变更**:
+- `TranscriberEngine.transcribe()`: 基类方法签名新增 `hotwords: Optional[str]` 参数
+- `WhisperEngine.transcribe()`: 将 hotwords 传递给 faster-whisper 的 `transcribe()` 调用
+- `FunASREngine.transcribe()`: 将 hotwords 以 `hotword` 参数名传递给 FunASR 的 `generate()` 调用
+- `V2T.run()`: 从 args 获取热词并传递给转写引擎
+- CLI argparse: 新增 `--hotwords` 选项
+
+**webui.py 变更**:
+- 新增 `parse_hotwords()`: 解析热词输入，支持逗号分隔和换行分隔
+- `generate_command()`: 新增 hotwords 参数，生成带热词的 CLI 命令
+- `run_v2t_batch()`: 新增 hotwords 参数，传递给 V2T 处理流程
+- UI: 在「转写配置」区域新增热词输入框 (`hotwords_input`)
+
+**使用方式**:
+- CLI: `python v2t.py <url> --hotwords "GPT,LLM,Transformer"`
+- WebUI: 在热词输入框中输入词汇，每行一个或用逗号分隔

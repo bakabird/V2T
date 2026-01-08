@@ -26,7 +26,11 @@ class Segment:
 
 class TranscriberEngine:
     def transcribe(
-        self, audio_path: Path, language: Optional[str] = None, task: str = "transcribe"
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+        task: str = "transcribe",
+        hotwords: Optional[str] = None,
     ) -> List[Segment]:
         raise NotImplementedError
 
@@ -48,15 +52,29 @@ class WhisperEngine(TranscriberEngine):
         )
 
     def transcribe(
-        self, audio_path: Path, language: Optional[str] = None, task: str = "transcribe"
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+        task: str = "transcribe",
+        hotwords: Optional[str] = None,
     ) -> List[Segment]:
         print(f"[Transcriber] Transcribing '{audio_path.name}' with Whisper...")
+        if hotwords:
+            print(f"[Transcriber] Using hotwords: {hotwords}")
+
+        # Build transcribe kwargs
+        transcribe_kwargs = {
+            "beam_size": 5,
+            "language": language,
+            "task": task,
+        }
+        # Add hotwords if provided (faster-whisper uses 'hotwords' parameter)
+        if hotwords:
+            transcribe_kwargs["hotwords"] = hotwords
 
         segments_generator, info = self.model.transcribe(
             str(audio_path),
-            beam_size=5,
-            language=language,
-            task=task,
+            **transcribe_kwargs,
         )
 
         print(
@@ -204,27 +222,38 @@ class FunASREngine(TranscriberEngine):
         return segments
 
     def transcribe(
-        self, audio_path: Path, language: Optional[str] = None, task: str = "transcribe"
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+        task: str = "transcribe",
+        hotwords: Optional[str] = None,
     ) -> List[Segment]:
         print(
             f"[Transcriber] Transcribing '{audio_path.name}' with FunASR (SenseVoice)..."
         )
+        if hotwords:
+            print(f"[Transcriber] Using hotwords: {hotwords}")
 
         # Note: SenseVoice auto-detects language, but we can pass language if needed.
         # language param in generate: "auto", "zh", "en", "yue", "ja", "ko"
         lang_param = language if language else "auto"
 
+        # Build generate kwargs
+        generate_kwargs = {
+            "input": str(audio_path),
+            "cache": {},
+            "language": lang_param,
+            "use_itn": True,
+            "batch_size_s": 60,
+            "merge_vad": True,
+            "merge_length_s": 15,
+        }
+        # Add hotwords if provided (FunASR uses 'hotword' parameter)
+        if hotwords:
+            generate_kwargs["hotword"] = hotwords
+
         try:
-            # batch_size_s is chunk size for inference
-            res = self.model.generate(
-                input=str(audio_path),
-                cache={},
-                language=lang_param,
-                use_itn=True,
-                batch_size_s=60,
-                merge_vad=True,
-                merge_length_s=15,
-            )
+            res = self.model.generate(**generate_kwargs)
         except Exception as e:
             logger.error(f"FunASR Inference failed: {e}")
             return []
@@ -372,13 +401,21 @@ class V2T:
 
         print(f"Found {len(urls)} task(s).")
 
+        # Get hotwords from args
+        hotwords = getattr(self.args, "hotwords", None)
+        if hotwords:
+            print(f"[Config] Hotwords enabled: {hotwords}")
+
         for url in urls:
             audio_path, title, video_id, upload_date, uploader = self.download_audio(
                 url
             )
             if audio_path:
                 segments = self.transcriber.transcribe(
-                    audio_path, language=self.args.language, task=self.args.task
+                    audio_path,
+                    language=self.args.language,
+                    task=self.args.task,
+                    hotwords=hotwords,
                 )
 
                 if segments:
@@ -480,6 +517,10 @@ def main():
         help="Output format (default: txt)",
     )
     parser.add_argument("--cookies", help="Path to cookies.txt file (Netscape format)")
+    parser.add_argument(
+        "--hotwords",
+        help="Hotwords to boost recognition (comma-separated or space-separated words, e.g., 'GPT,LLM,Transformer' or '人工智能 机器学习')",
+    )
 
     args = parser.parse_args()
 
