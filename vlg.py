@@ -361,10 +361,12 @@ class VideoListGetter:
         end_dt: Optional[datetime] = None,
     ) -> List[VideoEntry]:
         """
-        使用 Bilibili API 获取用户投稿视频列表
+        使用第三方 uapis.cn API 获取用户投稿视频列表
+
+        API 文档: https://uapis.cn/docs/api-reference/get-social-bilibili-archives
 
         Args:
-            uid: 用户 ID
+            uid: 用户 ID (mid)
             max_videos: 最大视频数量
             start_dt: 开始日期过滤
             end_dt: 结束日期过滤
@@ -376,82 +378,43 @@ class VideoListGetter:
 
         videos: List[VideoEntry] = []
         page = 1
-        page_size = 30
+        page_size = 20  # uapis.cn 默认每页 20 条
 
-        # 创建 session
-        session = requests.Session()
-
-        # 设置请求头，模拟浏览器访问
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": f"https://space.bilibili.com/{uid}/video",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Origin": "https://space.bilibili.com",
-        }
-        session.headers.update(headers)
-
-        # 如果有 cookies 文件，读取并添加到请求中
-        if self.cookies_file and os.path.exists(self.cookies_file):
-            try:
-                with open(self.cookies_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        parts = line.split("\t")
-                        if len(parts) >= 7:
-                            session.cookies.set(parts[5], parts[6])
-            except Exception as e:
-                logger.warning(f"读取 cookies 文件失败: {e}")
-
-        # 先访问用户空间页面获取初始 cookies
-        try:
-            session.get(f"https://space.bilibili.com/{uid}/video", timeout=10)
-            time.sleep(0.5)  # 短暂延迟
-        except Exception:
-            pass
+        # uapis.cn API 端点
+        api_url = "https://uapis.cn/api/v1/social/bilibili/archives"
 
         while True:
-            # 使用旧版 API
-            api_url = "https://api.bilibili.com/x/space/arc/search"
             params = {
                 "mid": uid,
                 "ps": page_size,
                 "pn": page,
-                "order": "pubdate",  # 按发布时间排序
-                "tid": 0,  # 全部分区
+                "orderby": "pubdate",  # 按最新发布排序
             }
 
             try:
-                response = session.get(api_url, params=params, timeout=10)
+                response = requests.get(api_url, params=params, timeout=15)
                 response.raise_for_status()
                 data = response.json()
 
-                if data.get("code") != 0:
+                # 检查错误响应 (400/404/500 等)
+                if "code" in data:
+                    error_code = data.get("code", "")
                     error_msg = data.get("message", "未知错误")
-                    logger.warning(f"Bilibili API 返回错误: {error_msg}")
-                    # 如果是风控错误，尝试短暂等待后重试一次
-                    if "频繁" in error_msg and page == 1:
-                        logger.info("等待2秒后重试...")
-                        time.sleep(2)
-                        response = session.get(api_url, params=params, timeout=10)
-                        data = response.json()
-                        if data.get("code") != 0:
-                            break
-                    else:
-                        break
-
-                vlist = data.get("data", {}).get("list", {}).get("vlist", [])
-
-                if not vlist:
+                    logger.warning(f"uapis.cn API 返回错误: [{error_code}] {error_msg}")
                     break
 
-                for video_info in vlist:
+                # 解析响应数据
+                video_list = data.get("videos", [])
+                total = data.get("total", 0)
+
+                if not video_list:
+                    break
+
+                for video_info in video_list:
                     # 解析发布时间（时间戳）
-                    created_ts = video_info.get("created", 0)
-                    if created_ts:
-                        upload_dt = datetime.fromtimestamp(created_ts)
+                    publish_ts = video_info.get("publish_time", 0)
+                    if publish_ts:
+                        upload_dt = datetime.fromtimestamp(publish_ts)
                         upload_date_str = upload_dt.strftime("%Y-%m-%d")
                     else:
                         upload_dt = None
@@ -468,10 +431,11 @@ class VideoListGetter:
                     bvid = video_info.get("bvid", "")
                     video_url = f"https://www.bilibili.com/video/{bvid}" if bvid else ""
 
+                    # 注意: uapis.cn API 响应中没有 author 字段，需要从其他地方获取或留空
                     video = VideoEntry(
                         upload_date=upload_date_str,
                         title=video_info.get("title", "未知标题"),
-                        author=video_info.get("author", "未知"),
+                        author="",  # API 响应中未提供 author，后续可通过其他方式补充
                         url=video_url,
                     )
 
@@ -482,7 +446,6 @@ class VideoListGetter:
                         return videos
 
                 # 检查是否还有更多页
-                total = data.get("data", {}).get("page", {}).get("count", 0)
                 if page * page_size >= total:
                     break
 
@@ -490,10 +453,10 @@ class VideoListGetter:
                 time.sleep(0.3)  # 分页请求间添加短暂延迟
 
             except requests.RequestException as e:
-                logger.error(f"请求 Bilibili API 失败: {e}")
+                logger.error(f"请求 uapis.cn API 失败: {e}")
                 break
             except Exception as e:
-                logger.error(f"解析 Bilibili API 响应失败: {e}")
+                logger.error(f"解析 uapis.cn API 响应失败: {e}")
                 break
 
         return videos
