@@ -12,6 +12,7 @@ def generate_command(
     url_file,
     engine,
     model,
+    funasr_model,
     language,
     task,
     output_format,
@@ -41,6 +42,8 @@ def generate_command(
 
     if engine == "whisper":
         cmd += f" --model {model}"
+    elif engine == "funasr":
+        cmd += f" --funasr-model {funasr_model}"
     if language:
         cmd += f" --language {language}"
     cmd += f" --task {task} --format {output_format} --device {device}"
@@ -107,6 +110,7 @@ def run_v2t_batch(
     url_file,
     engine,
     model,
+    funasr_model,
     language,
     task,
     output_format,
@@ -154,6 +158,7 @@ def run_v2t_batch(
                 urls=[url],
                 engine=engine,
                 model=model,
+                funasr_model=funasr_model,
                 language=language if language else None,
                 task=task,
                 output="./output",
@@ -346,7 +351,19 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                             choices=["tiny", "base", "small", "medium", "large-v3"],
                             value="small",
                             label="Whisper 模型大小",
-                            info="使用 FunASR 时此选项无效",
+                            info="仅在选择 Whisper 引擎时有效",
+                        )
+
+                        funasr_model_input = gr.Dropdown(
+                            choices=[
+                                "sensevoicesmall",
+                                "paraformer-large",
+                                "paraformer-zh",
+                            ],
+                            value="sensevoicesmall",
+                            label="FunASR 模型",
+                            info="SenseVoice: 多语言+情感. Paraformer-large: 高精度中文. Paraformer-zh: 长音频中文(带VAD)",
+                            visible=False,
                         )
 
                         language_input = gr.Textbox(
@@ -423,12 +440,26 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                 outputs=[urls_input],
             )
 
+            # 引擎切换时显示/隐藏对应的模型选择框
+            def update_model_visibility(engine):
+                if engine == "whisper":
+                    return gr.update(visible=True), gr.update(visible=False)
+                else:  # funasr
+                    return gr.update(visible=False), gr.update(visible=True)
+
+            engine_input.change(
+                fn=update_model_visibility,
+                inputs=[engine_input],
+                outputs=[model_input, funasr_model_input],
+            )
+
             # Inputs list for binding
             v2t_inputs = [
                 urls_input,
                 url_file_input,
                 engine_input,
                 model_input,
+                funasr_model_input,
                 language_input,
                 task_input,
                 format_input,
@@ -443,6 +474,7 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                 url_file_input,
                 engine_input,
                 model_input,
+                funasr_model_input,
                 language_input,
                 task_input,
                 format_input,

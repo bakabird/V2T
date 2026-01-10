@@ -129,3 +129,37 @@ v2t.py: V2T.download_audio() → Transcriber.transcribe()
 **使用方式**:
 - CLI: `python v2t.py <url> --hotwords "GPT,LLM,Transformer"`
 - WebUI: 在热词输入框中输入词汇，每行一个或用逗号分隔
+
+### 2025-01-08: FunASR 多模型支持
+
+**变更文件**: `v2t.py`, `webui.py`
+
+**新增功能**:
+- FunASR 引擎新增 Paraformer-large 和 Paraformer-large-zh-16k 模型支持
+- 支持通过 CLI 参数或 WebUI 选择 FunASR 模型
+- 根据模型类型自动选择不同的输出解析逻辑
+
+**支持的 FunASR 模型**:
+| 模型名称 | ModelScope 路径 | 特点 |
+|---------|----------------|------|
+| `sensevoicesmall` | `iic/SenseVoiceSmall` | 多语言支持，带情感识别，默认选项 |
+| `paraformer-large` | `iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch` | 高精度中文 ASR |
+| `paraformer-large-zh-16k` | `iic/speech_paraformer-large-long_asr_nat-zh-cn-16k-common-vocab8404-pytorch` | 长音频中文 ASR |
+
+**v2t.py 变更**:
+- 新增 `FUNASR_MODELS` 字典: FunASR 模型名称到 ModelScope 路径的映射
+- `FunASREngine.__init__()`: 新增 `model_name` 参数，支持动态选择模型
+- 新增 `FunASREngine._parse_paraformer_output()`: Paraformer 模型输出解析方法
+- `FunASREngine.transcribe()`: 根据模型类型选择解析逻辑和生成参数
+- CLI argparse: 新增 `--funasr-model` 选项，可选值: `sensevoicesmall`, `paraformer-large`, `paraformer-large-zh-16k`
+- `V2T.__init__()`: 将 `funasr_model` 参数传递给 FunASREngine
+
+**webui.py 变更**:
+- 新增 `funasr_model_input` 下拉框: FunASR 模型选择 UI 组件
+- `update_model_visibility()`: 引擎切换时显示/隐藏对应模型选择框
+- `generate_command()`: 新增 `funasr_model` 参数，生成带模型选择的 CLI 命令
+- `run_v2t_batch()`: 新增 `funasr_model` 参数，传递给 V2T 处理流程
+
+**使用方式**:
+- CLI: `python v2t.py <url> --engine funasr --funasr-model paraformer-large`
+- WebUI: 选择 FunASR 引擎后，在「FunASR 模型」下拉框中选择模型

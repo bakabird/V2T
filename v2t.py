@@ -96,8 +96,22 @@ class WhisperEngine(TranscriberEngine):
         return result_segments
 
 
+# FunASR model mapping
+# Note: For long audio, we use VAD + Paraformer + Punctuation combination
+FUNASR_MODELS = {
+    "sensevoicesmall": "iic/SenseVoiceSmall",
+    "paraformer-large": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    # For long audio, use the same base model but with VAD enabled
+    "paraformer-zh": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+}
+
+# VAD and Punctuation models for long audio processing
+FUNASR_VAD_MODEL = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+FUNASR_PUNC_MODEL = "iic/punc_ct-transformer_cn-en-common-vocab471067-large"
+
+
 class FunASREngine(TranscriberEngine):
-    def __init__(self, model_name: str = "iic/SenseVoiceSmall", device: str = "cpu"):
+    def __init__(self, model_name: str = "sensevoicesmall", device: str = "cpu"):
         try:
             from funasr import AutoModel
         except ImportError:
@@ -105,20 +119,41 @@ class FunASREngine(TranscriberEngine):
             sys.exit(1)
 
         self.device = device
-        # Map whisper model sizes to funasr models if needed, but we default to SenseVoiceSmall
-        # If user passed "large-v3" etc via --model, we ignore it or warn,
-        # but for now we stick to SenseVoiceSmall as requested.
-        self.model_name = "iic/SenseVoiceSmall"
+
+        # Resolve model name from mapping or use as-is if it's a full model path
+        model_key = model_name.lower()
+        if model_key in FUNASR_MODELS:
+            self.model_name = FUNASR_MODELS[model_key]
+            self.model_type = model_key
+        else:
+            # Allow direct model path for advanced users
+            self.model_name = model_name
+            self.model_type = "sensevoicesmall"  # Default parsing mode
+
+        # Determine if this is a SenseVoice or Paraformer model
+        self.is_sensevoice = "sensevoice" in self.model_name.lower()
+        self.is_paraformer = "paraformer" in self.model_name.lower()
+        # Check if this model needs VAD for long audio processing
+        self.use_vad = model_key == "paraformer-zh"
 
         print(f"[Transcriber] Loading FunASR model '{self.model_name}' on {device}...")
+        if self.use_vad:
+            print(f"[Transcriber] VAD enabled for long audio processing")
+
         try:
-            # Disable update to avoid network checks on every run if already downloaded
-            self.model = AutoModel(
-                model=self.model_name,
-                device=device,
-                disable_update=True,
-                trust_remote_code=False,  # Based on our finding
-            )
+            # Build model kwargs
+            model_kwargs = {
+                "model": self.model_name,
+                "device": device,
+                "disable_update": True,
+            }
+
+            # For paraformer-zh (long audio), enable VAD and punctuation models
+            if self.use_vad:
+                model_kwargs["vad_model"] = FUNASR_VAD_MODEL
+                model_kwargs["punc_model"] = FUNASR_PUNC_MODEL
+
+            self.model = AutoModel(**model_kwargs)
         except Exception as e:
             logger.error(f"Failed to load FunASR model: {e}")
             sys.exit(1)
@@ -221,6 +256,78 @@ class FunASREngine(TranscriberEngine):
 
         return segments
 
+    def _parse_paraformer_output(self, result_item: dict) -> List[Segment]:
+        """
+        Parse Paraformer model output with timestamps.
+        Paraformer returns: {'text': '...', 'timestamp': [[start1, end1], [start2, end2], ...], 'sentences': [...]}
+        For long audio, it may return sentences with timestamps.
+        """
+        segments = []
+        text = result_item.get("text", "")
+        timestamps = result_item.get("timestamp", [])
+        sentences = result_item.get("sentence_info", [])
+
+        # If sentences are available (for paraformer-large-long), use them
+        if sentences:
+            for sent in sentences:
+                start = sent.get("start", 0) / 1000.0  # Convert ms to seconds
+                end = sent.get("end", 0) / 1000.0
+                sent_text = sent.get("text", "")
+                if sent_text:
+                    segments.append(Segment(start=start, end=end, text=sent_text))
+        elif timestamps and text:
+            # For character/word level timestamps, merge into segments
+            # timestamps format: [[start_ms, end_ms], ...]
+            # We need to merge into sentence-level segments
+            words = list(text)
+            if len(timestamps) == len(words):
+                # Build segments by grouping words
+                current_text = []
+                current_start = None
+                current_end = None
+
+                for i, (word, ts) in enumerate(zip(words, timestamps)):
+                    start_ms, end_ms = ts
+                    if current_start is None:
+                        current_start = start_ms / 1000.0
+
+                    current_text.append(word)
+                    current_end = end_ms / 1000.0
+
+                    # Split on sentence-ending punctuation or length
+                    is_end = re.search(r"[.!?。！？]$", word)
+                    is_long = len("".join(current_text)) > 60
+
+                    if is_end or is_long:
+                        segments.append(
+                            Segment(
+                                start=current_start,
+                                end=current_end,
+                                text="".join(current_text),
+                            )
+                        )
+                        current_text = []
+                        current_start = None
+                        current_end = None
+
+                # Flush remaining
+                if current_text:
+                    segments.append(
+                        Segment(
+                            start=current_start or 0.0,
+                            end=current_end or 0.0,
+                            text="".join(current_text),
+                        )
+                    )
+            else:
+                # Fallback: just use text with estimated timing
+                segments.append(Segment(start=0.0, end=0.0, text=text))
+        elif text:
+            # No timestamps, just text
+            segments.append(Segment(start=0.0, end=0.0, text=text))
+
+        return segments
+
     def transcribe(
         self,
         audio_path: Path,
@@ -228,29 +335,41 @@ class FunASREngine(TranscriberEngine):
         task: str = "transcribe",
         hotwords: Optional[str] = None,
     ) -> List[Segment]:
+        model_display = "Paraformer" if self.is_paraformer else "SenseVoice"
         print(
-            f"[Transcriber] Transcribing '{audio_path.name}' with FunASR (SenseVoice)..."
+            f"[Transcriber] Transcribing '{audio_path.name}' with FunASR ({model_display})..."
         )
         if hotwords:
             print(f"[Transcriber] Using hotwords: {hotwords}")
 
-        # Note: SenseVoice auto-detects language, but we can pass language if needed.
-        # language param in generate: "auto", "zh", "en", "yue", "ja", "ko"
-        lang_param = language if language else "auto"
-
-        # Build generate kwargs
-        generate_kwargs = {
-            "input": str(audio_path),
-            "cache": {},
-            "language": lang_param,
-            "use_itn": True,
-            "batch_size_s": 60,
-            "merge_vad": True,
-            "merge_length_s": 15,
-        }
-        # Add hotwords if provided (FunASR uses 'hotword' parameter)
-        if hotwords:
-            generate_kwargs["hotword"] = hotwords
+        # Build generate kwargs based on model type
+        if self.is_paraformer:
+            # Paraformer-specific parameters
+            generate_kwargs = {
+                "input": str(audio_path),
+                "cache": {},
+                "batch_size_s": 300,  # Paraformer can handle longer batches
+            }
+            # Add hotwords if provided
+            if hotwords:
+                generate_kwargs["hotword"] = hotwords
+        else:
+            # SenseVoice parameters
+            # Note: SenseVoice auto-detects language, but we can pass language if needed.
+            # language param in generate: "auto", "zh", "en", "yue", "ja", "ko"
+            lang_param = language if language else "auto"
+            generate_kwargs = {
+                "input": str(audio_path),
+                "cache": {},
+                "language": lang_param,
+                "use_itn": True,
+                "batch_size_s": 60,
+                "merge_vad": True,
+                "merge_length_s": 15,
+            }
+            # Add hotwords if provided
+            if hotwords:
+                generate_kwargs["hotword"] = hotwords
 
         try:
             res = self.model.generate(**generate_kwargs)
@@ -262,10 +381,13 @@ class FunASREngine(TranscriberEngine):
 
         if isinstance(res, list):
             for item in res:
-                # item usually has 'text' with timestamps
-                # We might also get 'timestamp' list if configured, but SenseVoice uses text tags
-                text_with_tags = item.get("text", "")
-                segments = self._parse_sensevoice_output(text_with_tags)
+                if self.is_paraformer:
+                    # Use Paraformer-specific parsing
+                    segments = self._parse_paraformer_output(item)
+                else:
+                    # Use SenseVoice parsing (text with embedded timestamps)
+                    text_with_tags = item.get("text", "")
+                    segments = self._parse_sensevoice_output(text_with_tags)
                 all_segments.extend(segments)
 
         return all_segments
@@ -281,7 +403,10 @@ class V2T:
 
         # Initialize engine
         if self.args.engine == "funasr":
-            self.transcriber = FunASREngine(device=self.args.device)
+            funasr_model = getattr(self.args, "funasr_model", "sensevoicesmall")
+            self.transcriber = FunASREngine(
+                model_name=funasr_model, device=self.args.device
+            )
         else:
             self.transcriber = WhisperEngine(
                 model_size=self.args.model, device=self.args.device
@@ -490,6 +615,13 @@ def main():
         default="small",
         choices=["tiny", "base", "small", "medium", "large-v3"],
         help="Whisper model size (default: small). Ignored for FunASR.",
+    )
+    parser.add_argument(
+        "--funasr-model",
+        default="sensevoicesmall",
+        choices=["sensevoicesmall", "paraformer-large", "paraformer-zh"],
+        dest="funasr_model",
+        help="FunASR model to use (default: sensevoicesmall). 'paraformer-large' for high-accuracy Chinese ASR, 'paraformer-zh' for long audio with VAD support.",
     )
     parser.add_argument("--language", help="Source language code (e.g., 'en', 'zh')")
     parser.add_argument(
