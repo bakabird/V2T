@@ -4,6 +4,7 @@ import os
 import sys
 import shutil
 import re
+import tempfile
 from pathlib import Path
 import logging
 from typing import Optional, Tuple, List
@@ -31,6 +32,7 @@ class TranscriberEngine:
         language: Optional[str] = None,
         task: str = "transcribe",
         hotwords: Optional[str] = None,
+        initial_prompt: Optional[str] = None,
     ) -> List[Segment]:
         raise NotImplementedError
 
@@ -57,16 +59,20 @@ class WhisperEngine(TranscriberEngine):
         language: Optional[str] = None,
         task: str = "transcribe",
         hotwords: Optional[str] = None,
+        initial_prompt: Optional[str] = None,
     ) -> List[Segment]:
         print(f"[Transcriber] Transcribing '{audio_path.name}' with Whisper...")
         if hotwords:
             print(f"[Transcriber] Using hotwords: {hotwords}")
+        if initial_prompt:
+            print(f"[Transcriber] Using initial_prompt: {initial_prompt}")
 
         # Build transcribe kwargs
         transcribe_kwargs = {
             "beam_size": 5,
             "language": language,
             "task": task,
+            "initial_prompt": initial_prompt,
         }
         # Add hotwords if provided (faster-whisper uses 'hotwords' parameter)
         if hotwords:
@@ -138,7 +144,7 @@ class FunASREngine(TranscriberEngine):
 
         print(f"[Transcriber] Loading FunASR model '{self.model_name}' on {device}...")
         if self.use_vad:
-            print(f"[Transcriber] VAD enabled for long audio processing")
+            print("[Transcriber] VAD enabled for long audio processing")
 
         try:
             # Build model kwargs
@@ -334,6 +340,7 @@ class FunASREngine(TranscriberEngine):
         language: Optional[str] = None,
         task: str = "transcribe",
         hotwords: Optional[str] = None,
+        initial_prompt: Optional[str] = None,
     ) -> List[Segment]:
         model_display = "Paraformer" if self.is_paraformer else "SenseVoice"
         print(
@@ -341,6 +348,8 @@ class FunASREngine(TranscriberEngine):
         )
         if hotwords:
             print(f"[Transcriber] Using hotwords: {hotwords}")
+        if initial_prompt:
+            logger.warning("initial_prompt is not supported by FunASR engine yet.")
 
         # Build generate kwargs based on model type
         if self.is_paraformer:
@@ -401,6 +410,26 @@ class V2T:
         self.temp_dir = Path("temp_audio")
         self.temp_dir.mkdir(exist_ok=True)
 
+        # Handle cookies with temp file to avoid modification
+        self.cookies_file = None
+        self._temp_cookie_file = None
+
+        original_cookies = self.args.cookies
+        if not original_cookies and os.path.exists("cookies.txt"):
+            original_cookies = "cookies.txt"
+
+        if original_cookies and os.path.exists(original_cookies):
+            try:
+                fd, temp_path = tempfile.mkstemp(prefix="v2t_cookies_", suffix=".txt")
+                os.close(fd)
+                shutil.copy2(original_cookies, temp_path)
+                self.cookies_file = temp_path
+                self._temp_cookie_file = temp_path
+                logger.debug(f"Created temp cookies file: {temp_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create temp cookies file: {e}")
+                self.cookies_file = original_cookies
+
         # Initialize engine
         if self.args.engine == "funasr":
             funasr_model = getattr(self.args, "funasr_model", "sensevoicesmall")
@@ -411,6 +440,25 @@ class V2T:
             self.transcriber = WhisperEngine(
                 model_size=self.args.model, device=self.args.device
             )
+
+    def cleanup(self):
+        """Cleanup temporary files."""
+        if self._temp_cookie_file and os.path.exists(self._temp_cookie_file):
+            try:
+                os.remove(self._temp_cookie_file)
+                logger.debug(f"Removed temp cookies file: {self._temp_cookie_file}")
+                self._temp_cookie_file = None
+            except OSError as e:
+                logger.warning(f"Failed to remove temp cookies file: {e}")
+
+        if self.temp_dir.exists() and not any(self.temp_dir.iterdir()):
+            try:
+                self.temp_dir.rmdir()
+            except:
+                pass
+
+    def __del__(self):
+        self.cleanup()
 
     def check_ffmpeg(self):
         """Check if FFmpeg is installed."""
@@ -450,11 +498,7 @@ class V2T:
             ],
             "quiet": True,
             "no_warnings": True,
-            "cookiefile": (
-                self.args.cookies
-                if self.args.cookies
-                else ("cookies.txt" if os.path.exists("cookies.txt") else None)
-            ),
+            "cookiefile": self.cookies_file,
             "restrictfilenames": True,
             "noplaylist": True,  # 防止 Bilibili 播放列表导致元信息丢失
         }
@@ -510,6 +554,12 @@ class V2T:
                 f.write(f"{segment.text.strip()}\n")
 
     def run(self):
+        try:
+            self._run_internal()
+        finally:
+            self.cleanup()
+
+    def _run_internal(self):
         self.check_ffmpeg()
 
         urls = []
@@ -526,10 +576,14 @@ class V2T:
 
         print(f"Found {len(urls)} task(s).")
 
-        # Get hotwords from args
+        # Get hotwords and initial_prompt from args
         hotwords = getattr(self.args, "hotwords", None)
+        initial_prompt = getattr(self.args, "initial_prompt", None)
+
         if hotwords:
             print(f"[Config] Hotwords enabled: {hotwords}")
+        if initial_prompt:
+            print(f"[Config] Initial prompt enabled: {initial_prompt}")
 
         for url in urls:
             audio_path, title, video_id, upload_date, uploader = self.download_audio(
@@ -541,6 +595,7 @@ class V2T:
                     language=self.args.language,
                     task=self.args.task,
                     hotwords=hotwords,
+                    initial_prompt=initial_prompt,
                 )
 
                 if segments:
@@ -588,12 +643,6 @@ class V2T:
                     except OSError as e:
                         logger.warning(f"Failed to remove {audio_path}: {e}")
             print("-" * 50)
-
-        if not any(self.temp_dir.iterdir()):
-            try:
-                self.temp_dir.rmdir()
-            except:
-                pass
 
 
 def main():
@@ -652,6 +701,10 @@ def main():
     parser.add_argument(
         "--hotwords",
         help="Hotwords to boost recognition (comma-separated or space-separated words, e.g., 'GPT,LLM,Transformer' or '人工智能 机器学习')",
+    )
+    parser.add_argument(
+        "--initial-prompt",
+        help="Initial prompt to provide context to the model (Whisper only). Useful for guiding punctuation or vocabulary.",
     )
 
     args = parser.parse_args()

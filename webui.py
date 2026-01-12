@@ -1,10 +1,8 @@
 import gradio as gr
-import os
 from types import SimpleNamespace
 from v2t import V2T
 from vlg import VideoListGetter
 from pathlib import Path
-from datetime import datetime, timedelta
 
 
 def generate_command(
@@ -19,6 +17,7 @@ def generate_command(
     keep_audio,
     device,
     hotwords,
+    initial_prompt,
 ):
     """生成批量处理的 CLI 命令"""
     urls = []
@@ -56,6 +55,10 @@ def generate_command(
         ]
         if hw_list:
             cmd += f' --hotwords "{",".join(hw_list)}"'
+
+    if initial_prompt:
+        cmd += f' --initial-prompt "{initial_prompt}"'
+
     return cmd
 
 
@@ -77,7 +80,7 @@ def parse_urls(urls_text, url_file):
                     if line.strip() and not line.startswith("#")
                 ]
                 urls.extend(file_urls)
-        except Exception as e:
+        except Exception:
             pass
 
     # 去重保持顺序
@@ -117,6 +120,7 @@ def run_v2t_batch(
     keep_audio,
     device,
     hotwords,
+    initial_prompt,
 ):
     """批量处理视频转文字，使用 generator 实时更新进度"""
 
@@ -167,6 +171,7 @@ def run_v2t_batch(
                 format=output_format,
                 cookies=None,
                 hotwords=parsed_hotwords,
+                initial_prompt=initial_prompt if initial_prompt else None,
             )
 
             app = V2T(args)
@@ -193,7 +198,7 @@ def run_v2t_batch(
     success_count = sum(1 for r in results if r[1] == "success")
     fail_count = total - success_count
 
-    final_msg = f"🏁 批量处理完成!\n\n"
+    final_msg = "🏁 批量处理完成!\n\n"
     final_msg += f"📊 统计: 成功 {success_count}/{total}, 失败 {fail_count}/{total}\n\n"
     final_msg += "详细结果:\n"
     for r_url, r_status, r_msg in results:
@@ -283,7 +288,7 @@ def run_vlg(channel_url, date_mode, days, start_date, end_date, max_videos):
 
         status = f"✅ 成功获取 {len(videos)} 个视频"
         if len(videos) > 50:
-            status += f" (预览前50条)"
+            status += " (预览前50条)"
 
         # 生成可传递到 V2T 的 URL 列表
         urls_text = "\n".join(urls_for_v2t)
@@ -295,7 +300,7 @@ def run_vlg(channel_url, date_mode, days, start_date, end_date, max_videos):
 
 
 # Define Gradio Interface
-with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="Video2Text WebUI") as demo:
     gr.Markdown("# 🎬 Video2Text WebUI")
     gr.Markdown(
         "视频转文字工具 - 支持 Whisper 和 FunASR (SenseVoice) 引擎，支持批量处理"
@@ -402,6 +407,13 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                             info="用于提升特定词汇的识别率，支持中英文",
                         )
 
+                        initial_prompt_input = gr.Textbox(
+                            label="初始提示词 (Initial Prompt)",
+                            placeholder="仅 Whisper 支持。用于提供上下文、指定标点符号风格等。",
+                            lines=2,
+                            info="提供给模型的初始上下文",
+                        )
+
                     command_output = gr.Textbox(
                         label="CLI 命令预览",
                         interactive=False,
@@ -466,6 +478,7 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                 keep_audio_input,
                 device_input,
                 hotwords_input,
+                initial_prompt_input,
             ]
 
             # Bind events for live CLI command update
@@ -481,6 +494,7 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
                 keep_audio_input,
                 device_input,
                 hotwords_input,
+                initial_prompt_input,
             ]:
                 input_component.change(
                     fn=generate_command,
@@ -617,4 +631,4 @@ with gr.Blocks(title="Video2Text WebUI", theme=gr.themes.Soft()) as demo:
             )
 
 if __name__ == "__main__":
-    demo.launch(share=False)
+    demo.launch(server_name="0.0.0.0", share=False)

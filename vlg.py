@@ -11,10 +11,11 @@ import re
 import sys
 import logging
 import requests
+import shutil
+import tempfile
 from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Optional, List
-from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -43,7 +44,35 @@ class VideoListGetter:
         Args:
             cookies_file: cookies 文件路径 (Netscape 格式)
         """
-        self.cookies_file = cookies_file or self._find_cookies_file()
+        original_cookies = cookies_file or self._find_cookies_file()
+        self.cookies_file = None
+        self._temp_cookie_file = None
+
+        if original_cookies and os.path.exists(original_cookies):
+            try:
+                # 创建临时副本以避免修改原始 cookies.txt
+                fd, temp_path = tempfile.mkstemp(prefix="vlg_cookies_", suffix=".txt")
+                os.close(fd)
+                shutil.copy2(original_cookies, temp_path)
+                self.cookies_file = temp_path
+                self._temp_cookie_file = temp_path
+                logger.debug(f"已创建临时 cookies 文件: {temp_path}")
+            except Exception as e:
+                logger.warning(f"创建临时 cookies 文件失败: {e}")
+                self.cookies_file = original_cookies
+
+    def cleanup(self):
+        """清理临时文件"""
+        if self._temp_cookie_file and os.path.exists(self._temp_cookie_file):
+            try:
+                os.remove(self._temp_cookie_file)
+                logger.debug(f"已清理临时 cookies 文件: {self._temp_cookie_file}")
+                self._temp_cookie_file = None
+            except Exception as e:
+                logger.warning(f"清理临时 cookies 文件失败: {e}")
+
+    def __del__(self):
+        self.cleanup()
 
     def _find_cookies_file(self) -> Optional[str]:
         """查找默认的 cookies.txt 文件"""
@@ -488,7 +517,7 @@ class VideoListGetter:
 
         print(f"📺 平台: {platform.upper()}")
         print(f"🔗 URL: {url}")
-        print(f"⏳ 正在获取视频列表...")
+        print("⏳ 正在获取视频列表...")
 
         # 解析日期范围
         start_dt, end_dt = self.parse_date_range(start_date, end_date, days)
@@ -786,6 +815,9 @@ def main():
     except Exception as e:
         print(f"\n❌ 错误: {e}")
         sys.exit(1)
+    finally:
+        if "getter" in locals():
+            getter.cleanup()
 
 
 if __name__ == "__main__":
