@@ -75,7 +75,39 @@ python webui.py
 
 启动后，在浏览器中访问显示的本地链接（通常是 `http://127.0.0.1:7860`）。
 
-### 💻 命令行用法
+### � 使用 PM2 守护进程 (生产环境推荐)
+
+如需长期运行 WebUI 服务，推荐使用 PM2 进行进程管理，实现自动重启和日志管理。
+
+#### 1. 安装 PM2
+
+```bash
+npm install -g pm2
+```
+
+#### 2. 使用 PM2 启动服务
+
+项目已包含 `ecosystem.config.js` 配置文件，直接运行：
+
+```bash
+pm2 start ecosystem.config.js
+```
+
+#### 3. 常用 PM2 命令
+
+| 命令 | 功能 |
+| :--- | :--- |
+| `pm2 list` | 查看所有进程状态 |
+| `pm2 logs v2t-webui` | 查看实时日志 |
+| `pm2 restart v2t-webui` | 重启服务 |
+| `pm2 stop v2t-webui` | 停止服务 |
+| `pm2 delete v2t-webui` | 删除进程 |
+| `pm2 save` | 保存当前进程列表 |
+| `pm2 startup` | 设置开机自启 |
+
+> **注意**：日志文件保存在 `./logs/` 目录下，包括 `webui-out.log` 和 `webui-error.log`。
+
+### �💻 命令行用法
 
 ### 基本用法
 
