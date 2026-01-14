@@ -5,6 +5,7 @@ import sys
 import shutil
 import re
 import tempfile
+import subprocess
 from pathlib import Path
 import logging
 from typing import Optional, Tuple, List
@@ -16,6 +17,11 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Supported media formats for local file processing
+SUPPORTED_VIDEO_FORMATS = {".mp4", ".mkv", ".avi", ".mov"}
+SUPPORTED_AUDIO_FORMATS = {".mp3", ".wav", ".flac", ".m4a"}
+SUPPORTED_MEDIA_FORMATS = SUPPORTED_VIDEO_FORMATS | SUPPORTED_AUDIO_FORMATS
 
 
 @dataclass
@@ -477,6 +483,143 @@ class V2T:
         clean_name = "".join(ch for ch in clean_name if ord(ch) >= 32)
         return clean_name.strip()
 
+    def is_local_file(self, path_or_url: str) -> bool:
+        """Check if the input is a local file path (not a URL)."""
+        # Check if it looks like a URL
+        if path_or_url.startswith(("http://", "https://", "www.")):
+            return False
+        # Check if it's an existing file with supported format
+        path = Path(path_or_url)
+        if path.exists() and path.is_file():
+            return path.suffix.lower() in SUPPORTED_MEDIA_FORMATS
+        return False
+
+    def is_local_folder(self, path_str: str) -> bool:
+        """Check if the input is a local folder path."""
+        if path_str.startswith(("http://", "https://", "www.")):
+            return False
+        path = Path(path_str)
+        return path.exists() and path.is_dir()
+
+    def scan_folder(self, folder_path: str, recursive: bool = False) -> List[str]:
+        """Scan a folder for supported media files.
+
+        Args:
+            folder_path: Path to the folder to scan
+            recursive: If True, scan subfolders recursively
+
+        Returns:
+            List of absolute file paths for supported media files
+        """
+        folder = Path(folder_path)
+        if not folder.exists() or not folder.is_dir():
+            logger.error(f"Folder not found: {folder_path}")
+            return []
+
+        media_files = []
+
+        if recursive:
+            # Use rglob for recursive scanning
+            for ext in SUPPORTED_MEDIA_FORMATS:
+                # Case-insensitive matching for Windows
+                media_files.extend(folder.rglob(f"*{ext}"))
+                media_files.extend(folder.rglob(f"*{ext.upper()}"))
+        else:
+            # Use glob for top-level only
+            for ext in SUPPORTED_MEDIA_FORMATS:
+                media_files.extend(folder.glob(f"*{ext}"))
+                media_files.extend(folder.glob(f"*{ext.upper()}"))
+
+        # Remove duplicates and sort
+        unique_files = sorted(set(str(f.resolve()) for f in media_files))
+
+        if unique_files:
+            print(
+                f"[Scanner] Found {len(unique_files)} media file(s) in '{folder_path}'"
+            )
+            for f in unique_files:
+                print(f"  - {Path(f).name}")
+        else:
+            print(f"[Scanner] No media files found in '{folder_path}'")
+
+        return unique_files
+
+    def process_local_file(self, file_path: str) -> Tuple[Optional[Path], str]:
+        """Process a local media file, extracting audio if needed.
+
+        For video files: Extract audio to mp3 using FFmpeg
+        For audio files: Use directly (or convert if needed)
+
+        Returns:
+            Tuple of (audio_path, original_filename_stem)
+            audio_path is None if processing failed
+        """
+        source_path = Path(file_path)
+        original_stem = source_path.stem  # filename without extension
+
+        print(f"\n[LocalFile] Processing: {source_path.name}")
+
+        suffix = source_path.suffix.lower()
+
+        # For audio files that are directly supported, no conversion needed
+        if suffix in {".mp3", ".wav", ".flac", ".m4a"}:
+            print(
+                f"[LocalFile] Audio file detected, using directly: {source_path.name}"
+            )
+            return source_path, original_stem
+
+        # For video files, extract audio using FFmpeg
+        if suffix in SUPPORTED_VIDEO_FORMATS:
+            print(f"[LocalFile] Video file detected, extracting audio...")
+            # Create temp audio file
+            temp_audio_path = self.temp_dir / f"{original_stem}_extracted.mp3"
+
+            try:
+                # Use FFmpeg to extract audio
+                cmd = [
+                    "ffmpeg",
+                    "-i",
+                    str(source_path),
+                    "-vn",  # No video
+                    "-acodec",
+                    "libmp3lame",
+                    "-ab",
+                    "192k",
+                    "-ar",
+                    "16000",  # 16kHz for ASR
+                    "-ac",
+                    "1",  # Mono
+                    "-y",  # Overwrite
+                    str(temp_audio_path),
+                ]
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+
+                if result.returncode != 0:
+                    logger.error(f"FFmpeg extraction failed: {result.stderr}")
+                    return None, original_stem
+
+                if temp_audio_path.exists():
+                    print(f"[LocalFile] Audio extracted: {temp_audio_path.name}")
+                    return temp_audio_path, original_stem
+                else:
+                    logger.error("FFmpeg completed but output file not found")
+                    return None, original_stem
+
+            except Exception as e:
+                logger.error(f"Failed to extract audio from {source_path.name}: {e}")
+                return None, original_stem
+
+        # Unsupported format
+        logger.error(f"Unsupported file format: {suffix}")
+        return None, original_stem
+
     def download_audio(self, url: str) -> Tuple[Optional[Path], str, str, str, str]:
         """Download audio from video URL using yt-dlp.
 
@@ -562,19 +705,45 @@ class V2T:
     def _run_internal(self):
         self.check_ffmpeg()
 
-        urls = []
-        for url_arg in self.args.urls:
-            if os.path.isfile(url_arg):
-                with open(url_arg, "r") as f:
-                    urls.extend([line.strip() for line in f if line.strip()])
-            else:
-                urls.append(url_arg)
+        # Collect all tasks: can be URLs, local files, or folders
+        local_files = []  # List of local file paths
+        urls = []  # List of URLs
 
-        if not urls:
-            print("No URLs provided.")
+        recursive = getattr(self.args, "recursive", False)
+
+        for input_arg in self.args.inputs:
+            # Check if it's a text file containing URLs/paths
+            if os.path.isfile(input_arg) and Path(input_arg).suffix.lower() == ".txt":
+                with open(input_arg, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Check each line
+                        if self.is_local_file(line):
+                            local_files.append(line)
+                        elif self.is_local_folder(line):
+                            local_files.extend(self.scan_folder(line, recursive))
+                        else:
+                            urls.append(line)
+            # Check if it's a local media file
+            elif self.is_local_file(input_arg):
+                local_files.append(input_arg)
+            # Check if it's a folder
+            elif self.is_local_folder(input_arg):
+                local_files.extend(self.scan_folder(input_arg, recursive))
+            # Otherwise treat as URL
+            else:
+                urls.append(input_arg)
+
+        total_tasks = len(local_files) + len(urls)
+        if total_tasks == 0:
+            print("No valid inputs provided.")
             return
 
-        print(f"Found {len(urls)} task(s).")
+        print(
+            f"Found {total_tasks} task(s): {len(local_files)} local file(s), {len(urls)} URL(s)."
+        )
 
         # Get hotwords and initial_prompt from args
         hotwords = getattr(self.args, "hotwords", None)
@@ -585,6 +754,51 @@ class V2T:
         if initial_prompt:
             print(f"[Config] Initial prompt enabled: {initial_prompt}")
 
+        # Process local files first
+        for file_path in local_files:
+            audio_path, original_stem = self.process_local_file(file_path)
+            is_temp_audio = False
+
+            if audio_path:
+                # Check if this is a temporary extracted audio (from video)
+                source_suffix = Path(file_path).suffix.lower()
+                if source_suffix in SUPPORTED_VIDEO_FORMATS:
+                    is_temp_audio = True
+
+                segments = self.transcriber.transcribe(
+                    audio_path,
+                    language=self.args.language,
+                    task=self.args.task,
+                    hotwords=hotwords,
+                    initial_prompt=initial_prompt,
+                )
+
+                if segments:
+                    # For local files, use original filename as output name
+                    safe_stem = self.sanitize_filename(original_stem)
+                    output_base = self.output_dir / safe_stem
+
+                    if self.args.format in ["txt", "all"]:
+                        txt_path = output_base.with_suffix(".txt")
+                        self.write_txt(segments, txt_path)
+                        print(f"[Output] Saved TXT: {txt_path}")
+
+                    if self.args.format in ["srt", "all"]:
+                        srt_path = output_base.with_suffix(".srt")
+                        self.write_srt(segments, srt_path)
+                        print(f"[Output] Saved SRT: {srt_path}")
+
+                # Cleanup temporary extracted audio (not original files!)
+                if is_temp_audio and not self.args.keep_audio:
+                    try:
+                        os.remove(audio_path)
+                        print(f"[Cleanup] Removed temporary audio: {audio_path.name}")
+                    except OSError as e:
+                        logger.warning(f"Failed to remove {audio_path}: {e}")
+
+            print("-" * 50)
+
+        # Process URLs
         for url in urls:
             audio_path, title, video_id, upload_date, uploader = self.download_audio(
                 url
@@ -651,7 +865,11 @@ def main():
     )
 
     parser.add_argument(
-        "urls", nargs="+", help="Video URLs or path to .txt file containing URLs"
+        "inputs",
+        nargs="+",
+        metavar="INPUT",
+        help="Video URLs, local media files, folders, or path to .txt file containing URLs/paths. "
+        "Supported formats: MP4, MKV, AVI, MOV (video); MP3, WAV, FLAC, M4A (audio)",
     )
     parser.add_argument(
         "--engine",
@@ -705,6 +923,12 @@ def main():
     parser.add_argument(
         "--initial-prompt",
         help="Initial prompt to provide context to the model (Whisper only). Useful for guiding punctuation or vocabulary.",
+    )
+    parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Recursively scan subfolders when a folder path is provided",
     )
 
     args = parser.parse_args()

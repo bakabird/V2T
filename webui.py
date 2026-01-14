@@ -1,8 +1,14 @@
 import gradio as gr
 from types import SimpleNamespace
-from v2t import V2T
+from v2t import (
+    V2T,
+    SUPPORTED_MEDIA_FORMATS,
+    SUPPORTED_VIDEO_FORMATS,
+    SUPPORTED_AUDIO_FORMATS,
+)
 from vlg import VideoListGetter
 from pathlib import Path
+import os
 
 
 def generate_command(
@@ -159,7 +165,7 @@ def run_v2t_batch(
         try:
             # Create args for single URL
             args = SimpleNamespace(
-                urls=[url],
+                inputs=[url],  # Changed from 'urls' to 'inputs' to match v2t.py
                 engine=engine,
                 model=model,
                 funasr_model=funasr_model,
@@ -172,6 +178,7 @@ def run_v2t_batch(
                 cookies=None,
                 hotwords=parsed_hotwords,
                 initial_prompt=initial_prompt if initial_prompt else None,
+                recursive=False,
             )
 
             app = V2T(args)
@@ -211,6 +218,226 @@ def run_v2t_batch(
     ]
 
     yield final_msg, all_files, result_table
+
+
+# ==================== Local File Processing Functions ====================
+
+
+def scan_local_folder(folder_path, recursive=False):
+    """扫描文件夹获取支持的媒体文件列表"""
+    if not folder_path or not os.path.isdir(folder_path):
+        return []
+
+    folder = Path(folder_path)
+    media_files = []
+
+    if recursive:
+        for ext in SUPPORTED_MEDIA_FORMATS:
+            media_files.extend(folder.rglob(f"*{ext}"))
+            media_files.extend(folder.rglob(f"*{ext.upper()}"))
+    else:
+        for ext in SUPPORTED_MEDIA_FORMATS:
+            media_files.extend(folder.glob(f"*{ext}"))
+            media_files.extend(folder.glob(f"*{ext.upper()}"))
+
+    # 去重并排序
+    unique_files = sorted(set(str(f.resolve()) for f in media_files))
+    return unique_files
+
+
+def generate_local_command(
+    local_files,
+    folder_path,
+    recursive,
+    engine,
+    model,
+    funasr_model,
+    language,
+    task,
+    output_format,
+    keep_audio,
+    device,
+    hotwords,
+    initial_prompt,
+):
+    """生成本地文件处理的 CLI 命令"""
+    inputs = []
+
+    # 从上传的文件获取路径
+    if local_files:
+        for f in local_files:
+            if isinstance(f, str):
+                inputs.append(f)
+            elif hasattr(f, "name"):
+                inputs.append(f.name)
+
+    # 从文件夹路径获取
+    if folder_path and os.path.isdir(folder_path):
+        inputs.append(folder_path)
+
+    if not inputs:
+        return ""
+
+    # 构建命令
+    if len(inputs) == 1:
+        cmd = f'python v2t.py "{inputs[0]}" --engine {engine}'
+    else:
+        inputs_str = '" "'.join(inputs)
+        cmd = f'python v2t.py "{inputs_str}" --engine {engine}'
+
+    if engine == "whisper":
+        cmd += f" --model {model}"
+    elif engine == "funasr":
+        cmd += f" --funasr-model {funasr_model}"
+
+    if language:
+        cmd += f" --language {language}"
+
+    cmd += f" --task {task} --format {output_format} --device {device}"
+
+    if keep_audio:
+        cmd += " --keep-audio"
+
+    if recursive:
+        cmd += " --recursive"
+
+    if hotwords:
+        hw_list = [
+            w.strip() for w in hotwords.replace("\n", ",").split(",") if w.strip()
+        ]
+        if hw_list:
+            cmd += f' --hotwords "{",".join(hw_list)}"'
+
+    if initial_prompt:
+        cmd += f' --initial-prompt "{initial_prompt}"'
+
+    return cmd
+
+
+def run_local_batch(
+    local_files,
+    folder_path,
+    recursive,
+    engine,
+    model,
+    funasr_model,
+    language,
+    task,
+    output_format,
+    keep_audio,
+    device,
+    hotwords,
+    initial_prompt,
+):
+    """批量处理本地媒体文件，使用 generator 实时更新进度"""
+
+    # 收集所有待处理文件
+    file_paths = []
+
+    # 从上传的文件获取路径
+    if local_files:
+        for f in local_files:
+            if isinstance(f, str):
+                file_paths.append(f)
+            elif hasattr(f, "name"):
+                file_paths.append(f.name)
+
+    # 从文件夹扫描
+    if folder_path and os.path.isdir(folder_path):
+        scanned = scan_local_folder(folder_path, recursive)
+        file_paths.extend(scanned)
+
+    # 去重
+    file_paths = list(dict.fromkeys(file_paths))
+
+    if not file_paths:
+        yield "❌ 请上传媒体文件或指定有效的文件夹路径", [], []
+        return
+
+    total = len(file_paths)
+    results = []  # [(filename, status, message)]
+    all_output_files = []
+
+    # 解析热词
+    parsed_hotwords = parse_hotwords(hotwords)
+
+    yield_msg = f"🚀 开始批量处理 {total} 个本地文件...\n"
+    if parsed_hotwords:
+        yield_msg += f"📝 热词: {parsed_hotwords}\n"
+    yield yield_msg, [], []
+
+    for idx, file_path in enumerate(file_paths, 1):
+        filename = Path(file_path).name
+
+        # 更新进度
+        progress_msg = f"📊 进度: {idx}/{total}\n"
+        progress_msg += f"▶️ 正在处理: {filename}\n\n"
+
+        # 显示已完成的任务状态
+        for r_name, r_status, r_msg in results:
+            status_icon = "✅" if r_status == "success" else "❌"
+            progress_msg += f"{status_icon} {r_name[:50]}... - {r_msg}\n"
+
+        yield progress_msg, all_output_files, [
+            [r[0][:50], "✅ 成功" if r[1] == "success" else "❌ 失败", r[2]]
+            for r in results
+        ]
+
+        try:
+            # Create args for single file
+            args = SimpleNamespace(
+                inputs=[file_path],
+                engine=engine,
+                model=model,
+                funasr_model=funasr_model,
+                language=language if language else None,
+                task=task,
+                output="./output",
+                device=device,
+                keep_audio=keep_audio,
+                format=output_format,
+                cookies=None,
+                hotwords=parsed_hotwords,
+                initial_prompt=initial_prompt if initial_prompt else None,
+                recursive=False,  # 单文件处理不需要递归
+            )
+
+            app = V2T(args)
+            app.run()
+
+            # 查找新生成的文件
+            output_dir = Path("./output")
+            if output_dir.exists():
+                import time
+
+                current_time = time.time()
+                for f in output_dir.iterdir():
+                    if f.is_file() and (current_time - f.stat().st_mtime) < 120:
+                        if str(f) not in all_output_files:
+                            all_output_files.append(str(f))
+
+            results.append((filename, "success", "处理完成"))
+
+        except Exception as e:
+            results.append((filename, "error", str(e)[:50]))
+
+    # 最终状态
+    success_count = sum(1 for r in results if r[1] == "success")
+    fail_count = total - success_count
+
+    final_msg = "🏁 批量处理完成!\n\n"
+    final_msg += f"📊 统计: 成功 {success_count}/{total}, 失败 {fail_count}/{total}\n\n"
+    final_msg += "详细结果:\n"
+    for r_name, r_status, r_msg in results:
+        status_icon = "✅" if r_status == "success" else "❌"
+        final_msg += f"{status_icon} {r_name[:60]}... - {r_msg}\n"
+
+    result_table = [
+        [r[0][:60], "✅ 成功" if r[1] == "success" else "❌ 失败", r[2]]
+        for r in results
+    ]
+
+    yield final_msg, all_output_files, result_table
 
 
 # ==================== Video List Getter Functions ====================
@@ -508,7 +735,177 @@ with gr.Blocks(title="Video2Text WebUI") as demo:
                 outputs=[output_log, output_files, result_table],
             )
 
-        # ==================== Tab 2: Video List Getter ====================
+        # ==================== Tab 2: Local File Processing ====================
+        with gr.TabItem("📂 本地文件转写"):
+            gr.Markdown("### 批量处理本地音视频文件")
+            gr.Markdown(
+                f"支持格式: 视频 ({', '.join(SUPPORTED_VIDEO_FORMATS)}), 音频 ({', '.join(SUPPORTED_AUDIO_FORMATS)})"
+            )
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("#### 选择媒体文件")
+
+                    with gr.Tab("📤 上传文件"):
+                        local_files_input = gr.File(
+                            label="上传音视频文件 (可多选)",
+                            file_count="multiple",
+                            file_types=list(SUPPORTED_MEDIA_FORMATS),
+                            type="filepath",
+                        )
+                        gr.Markdown("*可同时选择多个文件上传*")
+
+                    with gr.Tab("📁 文件夹路径"):
+                        folder_path_input = gr.Textbox(
+                            label="文件夹路径",
+                            placeholder="例如: C:\\Videos\\Meeting 或 /home/user/recordings",
+                            info="输入包含媒体文件的文件夹完整路径",
+                        )
+                        recursive_input = gr.Checkbox(
+                            label="递归扫描子文件夹",
+                            value=False,
+                            info="勾选后将扫描所有子文件夹中的媒体文件",
+                        )
+
+                    with gr.Accordion("⚙️ 转写配置", open=True):
+                        local_engine_input = gr.Dropdown(
+                            choices=["whisper", "funasr"],
+                            value="whisper",
+                            label="ASR 引擎",
+                            info="Whisper: 通用多语言. FunASR: 中文优化",
+                        )
+
+                        local_model_input = gr.Dropdown(
+                            choices=["tiny", "base", "small", "medium", "large-v3"],
+                            value="small",
+                            label="Whisper 模型大小",
+                        )
+
+                        local_funasr_model_input = gr.Dropdown(
+                            choices=[
+                                "sensevoicesmall",
+                                "paraformer-large",
+                                "paraformer-zh",
+                            ],
+                            value="sensevoicesmall",
+                            label="FunASR 模型",
+                            visible=False,
+                        )
+
+                        local_language_input = gr.Textbox(
+                            label="语言 (可选)",
+                            placeholder="例如: 'zh', 'en'. 留空自动检测",
+                        )
+
+                        local_task_input = gr.Dropdown(
+                            choices=["transcribe", "translate"],
+                            value="transcribe",
+                            label="任务类型",
+                        )
+
+                        local_format_input = gr.Dropdown(
+                            choices=["txt", "srt", "all"],
+                            value="txt",
+                            label="输出格式",
+                        )
+
+                        local_device_input = gr.Dropdown(
+                            choices=["cpu", "cuda"],
+                            value="cpu",
+                            label="计算设备",
+                        )
+
+                        local_keep_audio_input = gr.Checkbox(
+                            label="保留提取的音频文件",
+                            value=False,
+                            info="从视频提取的临时音频文件",
+                        )
+
+                        local_hotwords_input = gr.Textbox(
+                            label="热词 (Hotwords)",
+                            placeholder="每行一个或用逗号分隔",
+                            lines=2,
+                        )
+
+                        local_initial_prompt_input = gr.Textbox(
+                            label="初始提示词 (Initial Prompt)",
+                            placeholder="仅 Whisper 支持",
+                            lines=2,
+                        )
+
+                    local_command_output = gr.Textbox(
+                        label="CLI 命令预览",
+                        interactive=False,
+                        lines=3,
+                    )
+
+                    local_submit_btn = gr.Button(
+                        "🚀 开始批量处理", variant="primary", size="lg"
+                    )
+
+                with gr.Column(scale=1):
+                    local_output_log = gr.Textbox(
+                        label="处理日志",
+                        lines=12,
+                        max_lines=20,
+                    )
+
+                    local_output_files = gr.File(
+                        label="生成的文件",
+                        file_count="multiple",
+                    )
+
+                    local_result_table = gr.Dataframe(
+                        headers=["文件名", "状态", "信息"],
+                        label="处理结果汇总",
+                        wrap=True,
+                    )
+
+            # 引擎切换时显示/隐藏对应的模型选择框
+            def update_local_model_visibility(engine):
+                if engine == "whisper":
+                    return gr.update(visible=True), gr.update(visible=False)
+                else:
+                    return gr.update(visible=False), gr.update(visible=True)
+
+            local_engine_input.change(
+                fn=update_local_model_visibility,
+                inputs=[local_engine_input],
+                outputs=[local_model_input, local_funasr_model_input],
+            )
+
+            # 本地文件处理输入列表
+            local_inputs = [
+                local_files_input,
+                folder_path_input,
+                recursive_input,
+                local_engine_input,
+                local_model_input,
+                local_funasr_model_input,
+                local_language_input,
+                local_task_input,
+                local_format_input,
+                local_keep_audio_input,
+                local_device_input,
+                local_hotwords_input,
+                local_initial_prompt_input,
+            ]
+
+            # 实时更新命令预览
+            for input_component in local_inputs:
+                input_component.change(
+                    fn=generate_local_command,
+                    inputs=local_inputs,
+                    outputs=local_command_output,
+                )
+
+            local_submit_btn.click(
+                fn=run_local_batch,
+                inputs=local_inputs,
+                outputs=[local_output_log, local_output_files, local_result_table],
+            )
+
+        # ==================== Tab 3: Video List Getter ====================
         with gr.TabItem("📋 视频列表获取"):
             gr.Markdown("### 获取频道/作者的视频列表")
             gr.Markdown(

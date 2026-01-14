@@ -4,7 +4,7 @@
 
 ## 📋 项目概述
 
-**V2T (Video2Text)** 是一个视频转文字工具，支持 YouTube、Bilibili 等平台视频的自动下载、音频提取和 AI 语音转写。
+**V2T (Video2Text)** 是一个视频转文字工具，支持 YouTube、Bilibili 等平台视频的自动下载、音频提取和 AI 语音转写。同时支持本地音视频文件的批量转写处理。
 
 - **技术栈**: Python 3.9+, Gradio, yt-dlp, faster-whisper, FunASR
 - **运行环境**: Windows 10/11, 需要 FFmpeg
@@ -26,10 +26,11 @@ V2T/
 ## 🔧 核心模块
 
 ### v2t.py
-- **V2T 类**: 主要业务逻辑，支持批量 URL 处理
+- **V2T 类**: 主要业务逻辑，支持批量 URL 处理和本地文件处理
 - **WhisperEngine**: faster-whisper 引擎封装
 - **FunASREngine**: 阿里 SenseVoice 引擎封装
 - **Segment**: 转写结果数据类 (start, end, text)
+- **支持的媒体格式常量**: `SUPPORTED_VIDEO_FORMATS`, `SUPPORTED_AUDIO_FORMATS`, `SUPPORTED_MEDIA_FORMATS`
 
 ### vlg.py
 - **VideoListGetter**: 获取频道/用户的视频列表
@@ -38,8 +39,9 @@ V2T/
 
 ### webui.py
 - **Gradio Blocks** 构建的 Web 界面
-- Tab 1: 视频转文字 (支持批量处理)
-- Tab 2: 视频列表获取
+- Tab 1: 视频转文字 (支持批量处理在线视频)
+- Tab 2: 本地文件转写 (支持本地音视频文件批量处理)
+- Tab 3: 视频列表获取
 
 ## 🎯 关键函数
 
@@ -47,9 +49,12 @@ V2T/
 
 | 函数 | 用途 |
 |------|------|
-| `run_v2t_batch()` | 批量处理视频转文字 (generator，实时进度) |
+| `run_v2t_batch()` | 批量处理在线视频转文字 (generator，实时进度) |
+| `run_local_batch()` | 批量处理本地文件转写 (generator，实时进度) |
 | `parse_urls()` | 解析 URLs (文本框 + 文件上传) |
-| `generate_command()` | 生成 CLI 命令预览 |
+| `scan_local_folder()` | 扫描文件夹获取支持的媒体文件列表 |
+| `generate_command()` | 生成在线视频 CLI 命令预览 |
+| `generate_local_command()` | 生成本地文件 CLI 命令预览 |
 | `run_vlg()` | 运行视频列表获取 |
 | `generate_vlg_command()` | 生成 VLG CLI 命令 |
 
@@ -57,13 +62,18 @@ V2T/
 
 | 函数/类 | 用途 |
 |---------|------|
-| `V2T.run()` | 主入口，遍历 URL 列表进行处理 |
-| `V2T.download_audio()` | 使用 yt-dlp 下载音频 |
+| `V2T.run()` | 主入口，遍历输入列表进行处理 |
+| `V2T.is_local_file()` | 检测输入是否为本地文件 |
+| `V2T.is_local_folder()` | 检测输入是否为文件夹 |
+| `V2T.scan_folder()` | 递归/非递归扫描文件夹中的媒体文件 |
+| `V2T.process_local_file()` | 处理本地文件，提取音频 |
+| `V2T.download_audio()` | 使用 yt-dlp 下载在线视频音频 |
 | `V2T.write_txt/srt()` | 输出文件写入 |
 | `TranscriberEngine` | ASR 引擎基类 |
 
 ## 🔄 数据流
 
+### 在线视频处理流程
 ```
 用户输入 URLs
      ↓
@@ -72,6 +82,17 @@ webui.py: parse_urls() → run_v2t_batch()
 v2t.py: V2T.download_audio() → Transcriber.transcribe()
      ↓
 输出: ./output/{date}_{author}_{title}_{id}.txt/srt
+```
+
+### 本地文件处理流程
+```
+用户上传文件/输入文件夹路径
+     ↓
+webui.py: scan_local_folder() → run_local_batch()
+     ↓
+v2t.py: V2T.process_local_file() → FFmpeg 提取音频 → Transcriber.transcribe()
+     ↓
+输出: ./output/{原文件名}.txt/srt
 ```
 
 ## ⚠️ 注意事项
@@ -163,3 +184,46 @@ v2t.py: V2T.download_audio() → Transcriber.transcribe()
 **使用方式**:
 - CLI: `python v2t.py <url> --engine funasr --funasr-model paraformer-large`
 - WebUI: 选择 FunASR 引擎后，在「FunASR 模型」下拉框中选择模型
+
+### 2025-01-14: 本地文件处理功能
+
+**变更文件**: `v2t.py`, `webui.py`
+
+**新增功能**:
+- 支持本地音视频文件的批量转写处理
+- 支持文件夹批量扫描，可递归或非递归扫描子文件夹
+- 视频文件自动使用 FFmpeg 提取音频，音频文件直接处理
+- CLI 和 WebUI 均支持本地文件处理
+
+**支持的媒体格式**:
+| 类型 | 格式 |
+|------|------|
+| 视频 | `.mp4`, `.mkv`, `.avi`, `.mov` |
+| 音频 | `.mp3`, `.wav`, `.flac`, `.m4a` |
+
+**v2t.py 变更**:
+- 新增媒体格式常量: `SUPPORTED_VIDEO_FORMATS`, `SUPPORTED_AUDIO_FORMATS`, `SUPPORTED_MEDIA_FORMATS`
+- 新增 `V2T.is_local_file()`: 检测输入是否为本地文件
+- 新增 `V2T.is_local_folder()`: 检测输入是否为文件夹
+- 新增 `V2T.scan_folder()`: 扫描文件夹中的媒体文件
+- 新增 `V2T.process_local_file()`: 处理本地文件，使用 FFmpeg 提取音频
+- CLI argparse: `urls` 参数改名为 `inputs`，支持 URL、文件路径、文件夹路径混合输入
+- CLI argparse: 新增 `-r/--recursive` 参数控制文件夹递归扫描
+- `V2T._run_internal()`: 重构处理流程，先处理本地文件，再处理在线 URL
+- 本地文件输出命名策略: 使用原文件名（去掉扩展名）作为输出文件名
+
+**webui.py 变更**:
+- 新增「本地文件转写」Tab (Tab 2)
+- 新增 `local_files_input`: 多文件上传组件 (`gr.File`)
+- 新增 `folder_path_input`: 文件夹路径输入框
+- 新增 `recursive_input`: 递归扫描选项
+- 新增 `scan_local_folder()`: 扫描文件夹获取媒体文件列表
+- 新增 `generate_local_command()`: 生成本地文件处理 CLI 命令
+- 新增 `run_local_batch()`: 批量处理本地文件 (generator，实时进度更新)
+- 更新 `run_v2t_batch()`: 使用 `inputs` 替代 `urls` 以匹配 v2t.py 改动
+
+**使用方式**:
+- CLI 处理本地文件: `python v2t.py video.mp4 --engine whisper`
+- CLI 处理文件夹: `python v2t.py ./videos --recursive`
+- CLI 混合处理: `python v2t.py video.mp4 "https://youtube.com/..." ./folder`
+- WebUI: 在「本地文件转写」Tab 中上传文件或输入文件夹路径
