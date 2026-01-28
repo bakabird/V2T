@@ -25,7 +25,27 @@ def generate_command(
     hotwords,
     initial_prompt,
 ):
-    """生成批量处理的 CLI 命令"""
+    """生成批量处理的 CLI 命令
+
+    Builds a CLI command string for batch video transcription based on UI inputs.
+
+    Args:
+        urls_text (str): URLs entered in the text input, one per line.
+        url_file (str | None): Path to a file containing URLs (optional).
+        engine (str): ASR engine to use, either "whisper" or "funasr".
+        model (str): Whisper model size (tiny, base, small, medium, large-v3).
+        funasr_model (str): FunASR model name (sensevoicesmall, paraformer-large, paraformer-zh).
+        language (str | None): Target language code for transcription (e.g., "zh", "en").
+        task (str): Task type, either "transcribe" or "translate".
+        output_format (str): Output file format (txt, srt, or all).
+        keep_audio (bool): Whether to retain downloaded audio files.
+        device (str): Compute device (cpu or cuda).
+        hotwords (str | None): Hotwords to improve recognition accuracy, comma or newline separated.
+        initial_prompt (str | None): Initial prompt text for Whisper model context.
+
+    Returns:
+        str: Complete CLI command string for v2t.py, or empty string if no URLs provided.
+    """
     urls = []
 
     # 从文本框获取 URLs
@@ -69,7 +89,19 @@ def generate_command(
 
 
 def parse_urls(urls_text, url_file):
-    """解析 URLs 从文本和文件"""
+    """Extract and deduplicate URLs from text input and uploaded file.
+
+    Parses URLs from both the text input area and an optional uploaded file.
+    Combines all URLs while removing duplicates while preserving order.
+
+    Args:
+        urls_text (str): URLs entered in the text area, one per line.
+        url_file (str | None): Path to a text file containing URLs (optional).
+            Lines starting with # are ignored as comments.
+
+    Returns:
+        list[str]: List of unique URLs in order of first appearance.
+    """
     urls = []
 
     # 从文本框获取 URLs
@@ -101,7 +133,17 @@ def parse_urls(urls_text, url_file):
 
 
 def parse_hotwords(hotwords_text):
-    """解析热词输入，支持逗号分隔和换行分隔"""
+    """Convert hotwords input to a comma-separated string.
+
+    Normalizes hotword input by replacing newlines with commas,
+    trimming whitespace, and removing empty entries.
+
+    Args:
+        hotwords_text (str): Hotwords input, can be comma-separated or newline-separated.
+
+    Returns:
+        str | None: Comma-separated hotwords string, or None if input is empty.
+    """
     if not hotwords_text:
         return None
     # 将换行替换为逗号，然后按逗号分隔
@@ -128,7 +170,31 @@ def run_v2t_batch(
     hotwords,
     initial_prompt,
 ):
-    """批量处理视频转文字，使用 generator 实时更新进度"""
+    """Process multiple video URLs for transcription with real-time progress updates.
+
+    A generator function that yields progress updates as each video is processed.
+    Handles URL parsing, hotword processing, and batch execution via V2T.
+
+    Args:
+        urls_text (str): URLs entered in the text area, one per line.
+        url_file (str | None): Path to a text file containing URLs (optional).
+        engine (str): ASR engine to use ("whisper" or "funasr").
+        model (str): Whisper model size.
+        funasr_model (str): FunASR model name.
+        language (str | None): Target language code.
+        task (str): Task type ("transcribe" or "translate").
+        output_format (str): Output format (txt, srt, all).
+        keep_audio (bool): Whether to retain downloaded audio files.
+        device (str): Compute device (cpu or cuda).
+        hotwords (str | None): Hotwords for improved recognition.
+        initial_prompt (str | None): Initial prompt for Whisper context.
+
+    Yields:
+        tuple: A tuple containing (progress_message, output_files, result_table).
+            - progress_message (str): Status update with current progress info.
+            - output_files (list[str]): Paths to generated output files.
+            - result_table (list[list]): Table of results with [URL, status, message].
+    """
 
     urls = parse_urls(urls_text, url_file)
 
@@ -157,10 +223,14 @@ def run_v2t_batch(
             status_icon = "✅" if r_status == "success" else "❌"
             progress_msg += f"{status_icon} {r_url[:50]}... - {r_msg}\n"
 
-        yield progress_msg, all_files, [
-            [r[0][:50], "✅ 成功" if r[1] == "success" else "❌ 失败", r[2]]
-            for r in results
-        ]
+        yield (
+            progress_msg,
+            all_files,
+            [
+                [r[0][:50], "✅ 成功" if r[1] == "success" else "❌ 失败", r[2]]
+                for r in results
+            ],
+        )
 
         try:
             # Create args for single URL
@@ -224,7 +294,18 @@ def run_v2t_batch(
 
 
 def scan_local_folder(folder_path, recursive=False):
-    """扫描文件夹获取支持的媒体文件列表"""
+    """Scan a folder for supported media files.
+
+    Recursively or non-recursively searches a directory for audio and video files
+    matching the supported formats. Returns absolute paths sorted alphabetically.
+
+    Args:
+        folder_path (str): Path to the folder to scan.
+        recursive (bool): Whether to search subdirectories recursively. Defaults to False.
+
+    Returns:
+        list[str]: Sorted list of absolute file paths to media files, or empty list if invalid path.
+    """
     if not folder_path or not os.path.isdir(folder_path):
         return []
 
@@ -260,7 +341,29 @@ def generate_local_command(
     hotwords,
     initial_prompt,
 ):
-    """生成本地文件处理的 CLI 命令"""
+    """Build CLI command for processing local media files.
+
+    Constructs a v2t.py command string for local file transcription based on
+    uploaded files and/or folder path inputs.
+
+    Args:
+        local_files (list): List of uploaded file objects or paths.
+        folder_path (str | None): Path to folder containing media files (optional).
+        recursive (bool): Whether to scan subdirectories recursively.
+        engine (str): ASR engine ("whisper" or "funasr").
+        model (str): Whisper model size.
+        funasr_model (str): FunASR model name.
+        language (str | None): Target language code.
+        task (str): Task type ("transcribe" or "translate").
+        output_format (str): Output format (txt, srt, all).
+        keep_audio (bool): Whether to retain extracted audio files.
+        device (str): Compute device (cpu or cuda).
+        hotwords (str | None): Hotwords for improved recognition.
+        initial_prompt (str | None): Initial prompt for Whisper context.
+
+    Returns:
+        str: Complete CLI command string for v2t.py, or empty string if no inputs.
+    """
     inputs = []
 
     # 从上传的文件获取路径
@@ -378,10 +481,14 @@ def run_local_batch(
             status_icon = "✅" if r_status == "success" else "❌"
             progress_msg += f"{status_icon} {r_name[:50]}... - {r_msg}\n"
 
-        yield progress_msg, all_output_files, [
-            [r[0][:50], "✅ 成功" if r[1] == "success" else "❌ 失败", r[2]]
-            for r in results
-        ]
+        yield (
+            progress_msg,
+            all_output_files,
+            [
+                [r[0][:50], "✅ 成功" if r[1] == "success" else "❌ 失败", r[2]]
+                for r in results
+            ],
+        )
 
         try:
             # Create args for single file
