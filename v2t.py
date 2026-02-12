@@ -8,7 +8,7 @@ import tempfile
 import subprocess
 from pathlib import Path
 import logging
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Any, cast
 from dataclasses import dataclass
 import yt_dlp
 
@@ -620,8 +620,59 @@ class V2T:
         logger.error(f"Unsupported file format: {suffix}")
         return None, original_stem
 
+    def _extract_audio_ffmpeg(self, input_path: Path) -> Optional[Path]:
+        """Extract audio from a downloaded media file using FFmpeg.
+
+        Converts to mono 16kHz mp3 suitable for ASR.
+
+        Returns:
+            Path to the extracted mp3 file, or None on failure.
+        """
+        output_path = input_path.with_suffix(".mp3")
+        # Skip if input is already the target mp3
+        if input_path.suffix.lower() == ".mp3" and input_path == output_path:
+            return input_path
+
+        try:
+            cmd = [
+                "ffmpeg",
+                "-i", str(input_path),
+                "-vn",              # No video
+                "-acodec", "libmp3lame",
+                "-ab", "192k",
+                "-ar", "16000",     # 16kHz for ASR
+                "-ac", "1",         # Mono
+                "-y",               # Overwrite
+                str(output_path),
+            ]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            )
+            if result.returncode != 0:
+                logger.error(f"FFmpeg audio extraction failed: {result.stderr}")
+                return None
+
+            if output_path.exists():
+                # Remove original downloaded file to save space
+                if input_path != output_path:
+                    try:
+                        os.remove(input_path)
+                    except OSError:
+                        pass
+                return output_path
+            return None
+        except Exception as e:
+            logger.error(f"FFmpeg audio extraction error: {e}")
+            return None
+
     def download_audio(self, url: str) -> Tuple[Optional[Path], str, str, str, str]:
         """Download audio from video URL using yt-dlp.
+
+        Strategy: try bestaudio first; if the source doesn't offer a
+        standalone audio stream (common on YouTube for some regions/accounts),
+        fall back to downloading a low-quality video with good audio and then
+        extract the audio track with FFmpeg.
 
         Returns:
             Tuple of (audio_path, title, video_id, upload_date, uploader)
@@ -629,16 +680,13 @@ class V2T:
         print(f"\n[Downloader] Processing: {url}")
         out_tmpl = str(self.temp_dir / "%(title)s_%(id)s.%(ext)s")
 
+        # Format preference chain:
+        #   1) bestaudio          – pure audio stream (smallest, best quality)
+        #   2) worstvideo+bestaudio – low-res video muxed with best audio
+        #   3) worst              – absolute fallback, smallest available file
         ydl_opts = {
-            "format": "bestaudio/best",
+            "format": "bestaudio/worstvideo*+bestaudio/worst",
             "outtmpl": out_tmpl,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }
-            ],
             "quiet": True,
             "no_warnings": True,
             "cookiefile": self.cookies_file,
@@ -647,31 +695,50 @@ class V2T:
         }
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                 info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                base_path = Path(filename).with_suffix(".mp3")
+                downloaded_file = Path(ydl.prepare_filename(info))
 
-                if not base_path.exists():
-                    possible_files = list(self.temp_dir.glob(f"*{info['id']}*.mp3"))
-                    if possible_files:
-                        base_path = possible_files[0]
+                # yt-dlp may merge into mkv/webm; locate the actual file
+                if not downloaded_file.exists():
+                    # Try common extensions
+                    for ext in (".mkv", ".webm", ".mp4", ".m4a", ".opus", ".mp3"):
+                        candidate = downloaded_file.with_suffix(ext)
+                        if candidate.exists():
+                            downloaded_file = candidate
+                            break
                     else:
-                        raise FileNotFoundError("Downloaded audio file not found.")
+                        # Glob by video id
+                        possible = list(self.temp_dir.glob(f"*{info['id']}*"))
+                        if possible:
+                            downloaded_file = possible[0]
+                        else:
+                            raise FileNotFoundError(
+                                "Downloaded file not found after yt-dlp."
+                            )
+
+                print(f"[Downloader] Downloaded: {downloaded_file.name}")
+
+                # Extract audio with FFmpeg (handles both pure-audio and video files)
+                audio_path = self._extract_audio_ffmpeg(downloaded_file)
+                if audio_path is None:
+                    raise RuntimeError(
+                        f"Failed to extract audio from {downloaded_file.name}"
+                    )
 
                 # Extract video metadata
-                title = info.get("title", "Untitled")
-                video_id = info.get("id", "")
-                upload_date = info.get("upload_date", "")  # Format: YYYYMMDD
-                uploader = info.get("uploader", "") or info.get(
-                    "channel", ""
-                )  # Fallback to channel
+                title = str(info.get("title") or "Untitled")
+                video_id = str(info.get("id") or "")
+                upload_date = info.get("upload_date") or ""
+                upload_date = str(upload_date) if upload_date else ""
+                uploader = info.get("uploader") or info.get("channel") or ""
+                uploader = str(uploader) if uploader else ""
 
-                print(f"[Downloader] Downloaded: {base_path.name}")
+                print(f"[Downloader] Audio ready: {audio_path.name}")
                 print(
                     f"[Downloader] Video info - Date: {upload_date}, Author: {uploader}"
                 )
-                return base_path, title, video_id, upload_date, uploader
+                return audio_path, title, video_id, upload_date, uploader
         except Exception as e:
             logger.error(f"Download failed for {url}: {str(e)}")
             return None, "", "", "", ""
