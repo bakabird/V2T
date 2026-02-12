@@ -2,6 +2,7 @@ import gradio as gr
 from types import SimpleNamespace
 from v2t import (
     V2T,
+    FFmpegError,
     SUPPORTED_MEDIA_FORMATS,
     SUPPORTED_VIDEO_FORMATS,
     SUPPORTED_AUDIO_FORMATS,
@@ -198,8 +199,8 @@ def run_v2t_batch(
 
             results.append((url, "success", "处理完成"))
 
-        except Exception as e:
-            results.append((url, "error", str(e)[:50]))
+        except (FFmpegError, ImportError, RuntimeError, Exception) as e:
+            results.append((url, "error", str(e)[:100]))
 
     # 最终状态
     success_count = sum(1 for r in results if r[1] == "success")
@@ -418,8 +419,8 @@ def run_local_batch(
 
             results.append((filename, "success", "处理完成"))
 
-        except Exception as e:
-            results.append((filename, "error", str(e)[:50]))
+        except (FFmpegError, ImportError, RuntimeError, Exception) as e:
+            results.append((filename, "error", str(e)[:100]))
 
     # 最终状态
     success_count = sum(1 for r in results if r[1] == "success")

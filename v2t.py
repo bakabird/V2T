@@ -31,6 +31,10 @@ class Segment:
     text: str
 
 
+class FFmpegError(Exception):
+    pass
+
+
 class TranscriberEngine:
     def transcribe(
         self,
@@ -48,8 +52,7 @@ class WhisperEngine(TranscriberEngine):
         try:
             import faster_whisper
         except ImportError:
-            print("Error: faster-whisper not installed.")
-            sys.exit(1)
+            raise ImportError("faster-whisper is not installed. Please run 'pip install faster-whisper'.")
 
         self.model_size = model_size
         self.device = device
@@ -127,8 +130,7 @@ class FunASREngine(TranscriberEngine):
         try:
             from funasr import AutoModel
         except ImportError:
-            print("Error: funasr not installed. Run 'pip install -r requirements.txt'")
-            sys.exit(1)
+            raise ImportError("funasr is not installed. Please run 'pip install -r requirements.txt'.")
 
         self.device = device
 
@@ -168,7 +170,7 @@ class FunASREngine(TranscriberEngine):
             self.model = AutoModel(**model_kwargs)
         except Exception as e:
             logger.error(f"Failed to load FunASR model: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Failed to load FunASR model: {e}") from e
 
     def _parse_sensevoice_output(self, text: str) -> List[Segment]:
         """
@@ -469,13 +471,11 @@ class V2T:
     def check_ffmpeg(self):
         """Check if FFmpeg is installed."""
         if not shutil.which("ffmpeg"):
-            print("Error: FFmpeg is not installed.")
+            error_message = "Error: FFmpeg is not installed. "
             if sys.platform == "win32":
-                print("Please install it using: winget install ffmpeg")
-            print(
-                "Please download from https://ffmpeg.org/download.html and add to PATH"
-            )
-            sys.exit(1)
+                error_message += "Please install it using: winget install ffmpeg. "
+            error_message += "Or download from https://ffmpeg.org/download.html and add to PATH."
+            raise FFmpegError(error_message)
 
     def sanitize_filename(self, name: str) -> str:
         """Sanitize filename to prevent issues."""
